@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
-from telethon import TelegramClient, errors, events
+# Use the high-level Button helper
+from telethon import Button, TelegramClient, errors, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CreateChatRequest
-from telethon.tl.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from telethon.tl.types import Message
 
 # --- Basic Logging Setup ---
 logging.basicConfig(
@@ -23,11 +24,7 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger(__name__)
 
-# --- Configuration & Security Note ---
-# IMPORTANT: Make sure your .env file and the 'sessions' directory are secure.
-# In a production environment, set permissions:
-# chmod 600 .env
-# chmod 700 sessions/
+# --- Configuration ---
 load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
@@ -46,13 +43,11 @@ BTN_START_PROCESS = "🚀 شروع ساخت گروه"
 BTN_CANCEL = "❌ لغو عملیات"
 BTN_HELP = "ℹ️ راهنما"
 
-MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton(BTN_START_PROCESS)],
-        [KeyboardButton(BTN_CANCEL), KeyboardButton(BTN_HELP)],
-    ],
-    resize=True
-)
+# --- CORRECTED KEYBOARD DEFINITION USING Button HELPER ---
+MAIN_MENU_KEYBOARD = [
+    [Button.text(BTN_START_PROCESS)],
+    [Button.text(BTN_CANCEL), Button.text(BTN_HELP)],
+]
 
 class GroupCreatorBot:
     """A class to encapsulate the bot's logic, state, and handlers."""
@@ -65,26 +60,21 @@ class GroupCreatorBot:
         self.worker_semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
 
     # --- Helper Functions ---
-
     def _get_session_path(self, user_id: int) -> Path:
-        """Returns the file path for a user's session."""
         return SESSIONS_DIR / f"user_{user_id}.session"
 
     def _save_session_string(self, user_id: int, session_string: str) -> None:
-        """Saves a user's session string to a file."""
         session_file = self._get_session_path(user_id)
         session_file.write_text(session_string)
         LOGGER.info(f"Session saved for user {user_id}.")
 
     def _load_session_string(self, user_id: int) -> Optional[str]:
-        """Loads a user's session string from a file if it exists."""
         session_file = self._get_session_path(user_id)
         if session_file.exists():
             return session_file.read_text().strip()
         return None
 
     def _delete_session_file(self, user_id: int) -> None:
-        """Deletes a user's session file if it exists."""
         try:
             self._get_session_path(user_id).unlink(missing_ok=True)
             LOGGER.info(f"Deleted session file for user {user_id}.")
@@ -92,41 +82,35 @@ class GroupCreatorBot:
             LOGGER.error(f"Error deleting session file for user {user_id}: {e}")
 
     def _create_new_user_client(self, session_string: Optional[str] = None) -> TelegramClient:
-        """Creates a Telethon client with randomized device info."""
         session = StringSession(session_string) if session_string else StringSession()
         device_params = [
             {'device_model': 'iPhone 14 Pro Max', 'system_version': '17.5.1', 'app_version': '10.9.1'},
             {'device_model': 'Samsung Galaxy S24 Ultra', 'system_version': 'SDK 34', 'app_version': '10.9.1'},
             {'device_model': 'Desktop', 'system_version': 'Windows 11', 'app_version': '4.16.8'},
-            {'device_model': 'Pixel 8 Pro', 'system_version': 'SDK 34', 'app_version': '10.9.0'},
-            {'device_model': 'MacBook Pro', 'system_version': 'macOS 14.5', 'app_version': '10.9.1'},
         ]
-        selected_device = random.choice(device_params)
-        return TelegramClient(session, API_ID, API_HASH, **selected_device)
+        return TelegramClient(session, API_ID, API_HASH, **random.choice(device_params))
 
     # --- Main Worker Task ---
-
     async def run_group_creation_worker(self, event: events.NewMessage.Event, user_client: TelegramClient) -> None:
-        """The main background task that creates 50 groups for the logged-in user."""
         user_id = event.sender_id
         try:
             async with self.worker_semaphore:
-                LOGGER.info(f"Worker started for user {user_id}. Semaphore acquired.")
-                await self.bot.send_message(user_id, '✅ **ورود موفقیت‌آمیز بود!**\n\nفرآیند ساخت ۵۰ گروه در پس‌زمینه آغاز شد.', buttons=MAIN_MENU_KEYBOARD)
+                LOGGER.info(f"Worker started for user {user_id}.")
+                await self.bot.send_message(user_id, '✅ **ورود موفقیت‌آمیز بود!**\n\nفرآیند ساخت ۵۰ گروه آغاز شد.', buttons=MAIN_MENU_KEYBOARD)
 
                 for i in range(50):
                     group_title = f"Automated Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
                         await user_client(CreateChatRequest(users=['@BotFather'], title=group_title))
-                        LOGGER.info(f"Successfully created group: {group_title} for user {user_id}")
+                        LOGGER.info(f"Created group: {group_title} for user {user_id}")
 
                         if (i + 1) % 10 == 0:
                             await self.bot.send_message(user_id, f"⏳ پیشرفت: {i + 1} گروه از ۵۰ گروه ساخته شد...")
 
                         await asyncio.sleep(random.randint(400, 800))
                     except errors.UserRestrictedError:
-                        LOGGER.error(f"User {user_id} is restricted from creating groups.")
-                        await self.bot.send_message(user_id, '❌ **خطا:** حساب شما به دلیل ریپورت اسپم توسط تلگرام محدود شده و نمی‌تواند گروه بسازد.')
+                        LOGGER.error(f"User {user_id} is restricted.")
+                        await self.bot.send_message(user_id, '❌ **خطا:** حساب شما محدود شده و نمی‌تواند گروه بسازد.')
                         break
                     except errors.FloodWaitError as fwe:
                         LOGGER.warning(f"Flood wait for user {user_id}. Sleeping for {fwe.seconds}s.")
@@ -138,15 +122,15 @@ class GroupCreatorBot:
                             f"▶️ **زمان تقریبی ادامه:** `{resume_time.strftime('%H:%M:%S')}`"
                         )
                         await asyncio.sleep(fwe.seconds)
-                    except Exception:
-                        LOGGER.error(f"Could not create group {group_title} for user {user_id}", exc_info=True)
+                    except Exception as e:
+                        LOGGER.error(f"Could not create group {group_title} for {user_id}", exc_info=e)
                         await self.bot.send_message(user_id, f"❌ خطای غیرمنتظره در هنگام ساخت گروه رخ داد.")
                         await asyncio.sleep(60)
         except asyncio.CancelledError:
-            LOGGER.info(f"Group creation task for user {user_id} was cancelled.")
+            LOGGER.info(f"Task for user {user_id} was cancelled.")
             await self.bot.send_message(user_id, "ℹ️ عملیات ساخت گروه لغو شد.")
         finally:
-            LOGGER.info(f"Worker finished for user {user_id}. Releasing semaphore.")
+            LOGGER.info(f"Worker finished for user {user_id}.")
             await self.bot.send_message(user_id, '🏁 چرخه ساخت گروه‌ها به پایان رسید.', buttons=MAIN_MENU_KEYBOARD)
             if user_id in self.active_workers:
                 del self.active_workers[user_id]
@@ -154,7 +138,6 @@ class GroupCreatorBot:
                 await user_client.disconnect()
 
     async def on_login_success(self, event: events.NewMessage.Event, user_client: TelegramClient) -> None:
-        """Handles the logic after a successful login, saving the session and starting the worker."""
         user_id = event.sender_id
         self._save_session_string(user_id, user_client.session.save())
         if user_id in self.login_sessions:
@@ -163,9 +146,7 @@ class GroupCreatorBot:
         self.active_workers[user_id] = task
 
     # --- Bot Event Handlers ---
-
     async def _start_handler(self, event: events.NewMessage.Event) -> None:
-        """Handles the /start command and shows the main menu."""
         await event.reply(
             '**🤖 به ربات سازنده گروه خوش آمدید!**\n\n'
             'از دکمه‌های زیر برای شروع یا مدیریت فرآیند استفاده کنید.',
@@ -174,7 +155,6 @@ class GroupCreatorBot:
         raise events.StopPropagation
 
     async def _cancel_handler(self, event: events.NewMessage.Event) -> None:
-        """Handles the cancel command/button, stopping any active task or login flow."""
         user_id = event.sender_id
         cancelled = False
         if user_id in self.active_workers:
@@ -195,35 +175,29 @@ class GroupCreatorBot:
         raise events.StopPropagation
 
     async def _start_process_handler(self, event: events.NewMessage.Event) -> None:
-        """Handles the 'Start Process' button, using a saved session or starting a new login."""
         user_id = event.sender_id
-        if user_id in self.active_workers:
-            await event.reply('⏳ یک فرآیند ساخت گروه برای شما در حال اجراست. لطفا منتظر بمانید یا آن را لغو کنید.')
-            return
-        if user_id in self.login_sessions:
-            await event.reply('⏳ شما در حال طی کردن مراحل ورود هستید. لطفا ادامه دهید.')
+        if user_id in self.active_workers or user_id in self.login_sessions:
+            await event.reply('⏳ یک فرآیند برای شما در حال اجراست. لطفا منتظر بمانید یا آن را لغو کنید.')
             return
 
         saved_session = self._load_session_string(user_id)
         if saved_session:
-            await event.reply('🔄 در حال ورود با نشست ذخیره شده... لطفا صبر کنید.')
+            await event.reply('🔄 در حال ورود با نشست ذخیره شده...')
             user_client = self._create_new_user_client(saved_session)
             try:
                 await user_client.connect()
                 if await user_client.is_user_authorized():
-                    LOGGER.info(f"User {user_id} re-logged in via saved session.")
                     await self.on_login_success(event, user_client)
                 else:
-                    LOGGER.warning(f"Session for user {user_id} is no longer authorized.")
                     self._delete_session_file(user_id)
-                    await event.reply('⚠️ **نشست شما منقضی شده است.**\n\nنشست ذخیره شده حذف شد. لطفاً دوباره وارد شوید.')
+                    await event.reply('⚠️ نشست شما منقضی شده. لطفا دوباره وارد شوید.')
                     await self._initiate_login_flow(event)
             except (errors.UserDeactivatedBanError, errors.AuthKeyUnregisteredError) as e:
-                LOGGER.error(f"Saved session for user {user_id} is invalid (Banned/Deleted): {e}")
+                LOGGER.error(f"Saved session for {user_id} is invalid: {e}")
                 self._delete_session_file(user_id)
-                await event.reply('❌ **حساب شما مسدود یا حذف شده است.**\n\nنشست ذخیره شده شما نامعتبر است و حذف شد.')
+                await event.reply('❌ حساب شما مسدود یا حذف شده و نشست آن پاک شد.')
             except Exception as e:
-                LOGGER.error(f"Failed to re-login user {user_id} with session: {e}", exc_info=True)
+                LOGGER.error(f"Failed to re-login user {user_id} with session", exc_info=e)
                 self._delete_session_file(user_id)
                 await event.reply('❌ خطایی در اتصال با نشست قبلی رخ داد. لطفا دوباره وارد شوید.')
                 await self._initiate_login_flow(event)
@@ -231,12 +205,10 @@ class GroupCreatorBot:
         await self._initiate_login_flow(event)
 
     async def _initiate_login_flow(self, event: events.NewMessage.Event) -> None:
-        """Starts the phone number collection step for a new login."""
         self.login_sessions[event.sender_id] = {'state': 'awaiting_phone'}
-        await event.reply('📞 لطفا شماره تلفن تلگرام خود را با فرمت بین‌المللی ارسال کنید (مثال: `+989123456789`).')
+        await event.reply('📞 لطفا شماره تلفن خود را با فرمت بین‌المللی ارسال کنید (مثال: `+989123456789`).')
 
     async def _message_router(self, event: events.NewMessage.Event) -> None:
-        """Routes all incoming messages to the correct handler based on user state or button press."""
         if not isinstance(getattr(event, 'message', None), Message) or not event.message.text:
             return
 
@@ -244,7 +216,7 @@ class GroupCreatorBot:
         route_map = {
             BTN_START_PROCESS: self._start_process_handler,
             BTN_CANCEL: self._cancel_handler,
-            BTN_HELP: self._start_handler,  # Remap help button to show start message
+            BTN_HELP: self._start_handler,
         }
         if text in route_map:
             await route_map[text](event)
@@ -262,7 +234,6 @@ class GroupCreatorBot:
                 await state_map[state](event)
 
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
-        """Handles the user's phone number submission."""
         user_id = event.sender_id
         self.login_sessions[user_id]['phone'] = event.text.strip()
         user_client = self._create_new_user_client()
@@ -271,19 +242,14 @@ class GroupCreatorBot:
             await user_client.connect()
             sent_code = await user_client.send_code_request(self.login_sessions[user_id]['phone'])
             self.login_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
-            await event.reply('💬 یک کد ورود به حساب تلگرام شما ارسال شد. لطفا آن را اینجا ارسال کنید.')
+            await event.reply('💬 کد ورود به تلگرام شما ارسال شد. لطفا آن را اینجا ارسال کنید.')
             self.login_sessions[user_id]['state'] = 'awaiting_code'
-        except errors.PhoneNumberInvalidError:
-            await event.reply('❌ **خطا:** فرمت شماره تلفن نامعتبر است.')
+        except (errors.PhoneNumberInvalidError, Exception) as e:
+            LOGGER.error(f"Phone input error for {user_id}", exc_info=e)
             del self.login_sessions[user_id]
-        except Exception as e:
-            LOGGER.error(f"Phone input error for user {user_id}: {e}", exc_info=True)
-            if user_id in self.login_sessions:
-                del self.login_sessions[user_id]
-            await event.reply('❌ **خطا:** یک مشکل داخلی در هنگام ارسال کد رخ داد.')
+            await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد.')
 
     async def _handle_code_input(self, event: events.NewMessage.Event) -> None:
-        """Handles the user's login code submission."""
         user_id = event.sender_id
         user_client = self.login_sessions[user_id]['client']
         try:
@@ -294,7 +260,7 @@ class GroupCreatorBot:
             )
             await self.on_login_success(event, user_client)
         except errors.SessionPasswordNeededError:
-            await event.reply('🔑 حساب شما دارای تایید دو مرحله‌ای است. لطفا رمز عبور خود را ارسال کنید.')
+            await event.reply('🔑 حساب شما تایید دو مرحله‌ای دارد. لطفا رمز عبور را ارسال کنید.')
             self.login_sessions[user_id]['state'] = 'awaiting_password'
         except (errors.PhoneNumberBannedError, errors.PhoneCodeInvalidError, errors.PhoneCodeExpiredError) as e:
             error_map = {
@@ -305,13 +271,11 @@ class GroupCreatorBot:
             await event.reply(f'❌ **خطا:** {error_map.get(type(e).__name__, "خطای ناشناخته.")}')
             del self.login_sessions[user_id]
         except Exception as e:
-            LOGGER.error(f"Code input error for user {user_id}: {e}", exc_info=True)
-            if user_id in self.login_sessions:
-                del self.login_sessions[user_id]
+            LOGGER.error(f"Code input error for {user_id}", exc_info=e)
+            del self.login_sessions[user_id]
             await event.reply('❌ **خطا:** یک مشکل داخلی رخ داده است.')
 
     async def _handle_password_input(self, event: events.NewMessage.Event) -> None:
-        """Handles the user's 2FA password submission."""
         user_id = event.sender_id
         user_client = self.login_sessions[user_id]['client']
         try:
@@ -320,19 +284,16 @@ class GroupCreatorBot:
         except errors.PasswordHashInvalidError:
             await event.reply('❌ **خطا:** رمز عبور اشتباه است. لطفا دوباره تلاش کنید.')
         except Exception as e:
-            LOGGER.error(f"Password input error for user {user_id}: {e}", exc_info=True)
-            if user_id in self.login_sessions:
-                del self.login_sessions[user_id]
+            LOGGER.error(f"Password input error for {user_id}", exc_info=e)
+            del self.login_sessions[user_id]
             await event.reply('❌ **خطا:** یک مشکل داخلی رخ داده است.')
 
     def register_handlers(self) -> None:
-        """Registers all event handlers with the bot client."""
         self.bot.add_event_handler(self._start_handler, events.NewMessage(pattern='/start'))
         self.bot.add_event_handler(self._cancel_handler, events.NewMessage(pattern='/cancel'))
         self.bot.add_event_handler(self._message_router, events.NewMessage)
 
     async def run(self) -> None:
-        """Starts the bot and runs until disconnected."""
         self.register_handlers()
         LOGGER.info("Starting bot...")
         await self.bot.start(bot_token=BOT_TOKEN)
