@@ -11,8 +11,10 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from telethon import Button, TelegramClient, errors, events
 from telethon.sessions import StringSession
+# ADDED: Imports for supergroup migration and permissions
+from telethon.tl.functions.channels import EditChatDefaultBannedRightsRequest, MigrateChatRequest
 from telethon.tl.functions.messages import CreateChatRequest, ExportChatInviteRequest
-from telethon.tl.types import Message
+from telethon.tl.types import ChatBannedRights, Message
 
 # --- Basic Logging Setup ---
 logging.basicConfig(
@@ -191,17 +193,45 @@ class GroupCreatorBot:
                 for i in range(Config.GROUPS_TO_CREATE):
                     group_title = f"{account_name} Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
+                        # Step 1: Create the group
                         result = await user_client(CreateChatRequest(users=[Config.GROUP_MEMBER_TO_ADD], title=group_title))
                         
-                        group_id = result.chats[0].id
+                        created_chat = result.chats[0]
+                        chat_id = created_chat.id
+                        
+                        # Step 2: Upgrade to Supergroup and set permissions
+                        history_visible_status = "ناموفق"
+                        try:
+                            # 2a. Migrate to supergroup
+                            updates = await user_client(MigrateChatRequest(chat_id=chat_id))
+                            new_channel = next((ch for ch in updates.chats if hasattr(ch, 'megagroup')), None)
+                            if not new_channel:
+                                raise ValueError("Could not find new supergroup after migration.")
+                            
+                            # 2b. Set history visible for new members
+                            await user_client(EditChatDefaultBannedRightsRequest(
+                                peer=new_channel,
+                                banned_rights=ChatBannedRights(
+                                    until_date=None,
+                                    view_messages=False  # Setting this to False *enables* the right for everyone
+                                )
+                            ))
+                            history_visible_status = "✅ فعال شد"
+                            LOGGER.info(f"Successfully made history visible for group {chat_id}")
+                        except Exception as e:
+                            LOGGER.error(f"Could not make history visible for group {chat_id}: {e}")
+                            history_visible_status = f"❌ خطا: {e}"
+
+                        # Step 3: Get invite link
                         invite_link = ""
                         try:
-                            invite = await user_client(ExportChatInviteRequest(group_id))
+                            invite = await user_client(ExportChatInviteRequest(peer=chat_id))
                             invite_link = invite.link
                         except Exception as e:
-                            LOGGER.warning(f"Could not export invite link for group {group_id}: {e}")
+                            LOGGER.warning(f"Could not export invite link for group {chat_id}: {e}")
                             invite_link = "لینک دعوت قابل ساخت نبود."
 
+                        # Step 4: Send progress and link to user
                         groups_made = i + 1
                         groups_remaining = Config.GROUPS_TO_CREATE - groups_made
                         time_remaining_minutes = (groups_remaining * avg_sleep) / 60
@@ -209,6 +239,7 @@ class GroupCreatorBot:
                         progress_message = (
                             f"📊 [{account_name}] {groups_made}/{Config.GROUPS_TO_CREATE} گروه ساخته شد.\n"
                             f"🔗 لینک دعوت: {invite_link}\n"
+                            f"👁️ تاریخچه گفتگو: {history_visible_status}\n"
                             f"⏳ زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه."
                         )
                         await self.bot.send_message(user_id, progress_message)
