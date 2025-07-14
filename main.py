@@ -161,10 +161,8 @@ class GroupCreatorBot:
             for acc_name in accounts:
                 worker_key = f"{user_id}:{acc_name}"
                 if worker_key in self.active_workers:
-                    # If worker is active, show a "Stop" button
                     keyboard.append([Button.text(f"{Config.BTN_STOP_PREFIX} {acc_name}")])
                 else:
-                    # If inactive, show "Start" and "Delete" buttons
                     keyboard.append([
                         Button.text(f"{Config.BTN_START_PREFIX} {acc_name}"),
                         Button.text(f"{Config.BTN_DELETE_PREFIX} {acc_name}")
@@ -215,9 +213,7 @@ class GroupCreatorBot:
             await self.bot.send_message(user_id, f"⏹️ عملیات برای حساب `{account_name}` توسط شما متوقف شد.")
         finally:
             LOGGER.info(f"Worker finished for {worker_key}.")
-            if worker_key not in self.active_workers or self.active_workers[worker_key].cancelled():
-                pass # Already handled by cancellation message
-            else:
+            if worker_key in self.active_workers and not self.active_workers[worker_key].cancelled():
                  await self.bot.send_message(user_id, f"🏁 چرخه ساخت گروه برای حساب `{account_name}` به پایان رسید.")
 
             if worker_key in self.active_workers:
@@ -234,16 +230,23 @@ class GroupCreatorBot:
         if user_id in self.login_sessions: del self.login_sessions[user_id]
         
         await self.bot.send_message(user_id, f"✅ حساب `{account_name}` با موفقیت اضافه شد!")
-        await self._manage_accounts_handler(event)
+        await self._send_accounts_menu(event)
         
     # --- Bot Event Handlers ---
     async def _start_handler(self, event: events.NewMessage.Event) -> None:
         await event.reply(Config.MSG_WELCOME, buttons=self._build_main_menu())
         raise events.StopPropagation
 
-    async def _manage_accounts_handler(self, event: events.NewMessage.Event) -> None:
+    # REFACTORED: New safe method to only send the menu
+    async def _send_accounts_menu(self, event: events.NewMessage.Event) -> None:
+        """Builds and sends the account management menu without stopping propagation."""
         accounts_keyboard = self._build_accounts_menu(event.sender_id)
         await event.reply(Config.MSG_ACCOUNT_MENU_HEADER, buttons=accounts_keyboard)
+
+    # REFACTORED: This handler now calls the safe method and then stops propagation
+    async def _manage_accounts_handler(self, event: events.NewMessage.Event) -> None:
+        """Shows the account management menu and stops further event processing."""
+        await self._send_accounts_menu(event)
         raise events.StopPropagation
     
     async def _server_status_handler(self, event: events.NewMessage.Event) -> None:
@@ -326,7 +329,7 @@ class GroupCreatorBot:
             if await user_client.is_user_authorized():
                 task = asyncio.create_task(self.run_group_creation_worker(user_id, account_name, user_client))
                 self.active_workers[worker_key] = task
-                await self._manage_accounts_handler(event) # Refresh menu to show "Stop"
+                await self._send_accounts_menu(event) # REFACTORED: Use safe method
             else:
                 self._delete_session_file(user_id, account_name)
                 await event.reply(f'⚠️ نشست برای حساب `{account_name}` منقضی شده و حذف شد. لطفا دوباره آن را اضافه کنید.')
@@ -341,10 +344,8 @@ class GroupCreatorBot:
 
         if worker_key in self.active_workers:
             self.active_workers[worker_key].cancel()
-            # The task will clean itself up from the dict in its `finally` block.
             LOGGER.info(f"User initiated cancellation for worker {worker_key}.")
-            # No need to send a message here, the worker's `except CancelledError` will.
-            await self._manage_accounts_handler(event) # Refresh menu
+            await self._send_accounts_menu(event) # REFACTORED: Use safe method
         else:
             await event.reply(f"ℹ️ هیچ عملیات فعالی برای حساب `{account_name}` جهت توقف وجود ندارد.")
 
@@ -362,9 +363,9 @@ class GroupCreatorBot:
         else:
             await event.reply(f"✅ عملیات برای حساب `{account_name}` متوقف شد (نشست از قبل وجود نداشت).")
         
-        await self._manage_accounts_handler(event)
+        await self._send_accounts_menu(event) # REFACTORED: Use safe method
 
-    # --- Login Flow Handlers (omitted for brevity, no changes from previous version) ---
+    # --- Login Flow Handlers ---
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
         self.login_sessions[user_id]['phone'] = event.text.strip()
