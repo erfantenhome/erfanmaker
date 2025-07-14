@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from telethon import Button, TelegramClient, errors, events
 from telethon.sessions import StringSession
-from telethon.tl.functions.messages import CreateChatRequest
+from telethon.tl.functions.messages import CreateChatRequest, ExportChatInviteRequest
 from telethon.tl.types import Message
 
 # --- Basic Logging Setup ---
@@ -29,6 +29,7 @@ LOGGER = logging.getLogger(__name__)
 class Config:
     """Holds all configurable values and UI strings for the bot."""
     # Bot Settings
+    MASTER_PASSWORD = "3935Eerfan@123"
     MAX_CONCURRENT_WORKERS = 5
     GROUPS_TO_CREATE = 50
     MIN_SLEEP_SECONDS = 300  # 5 minutes
@@ -65,6 +66,9 @@ class Config:
         "  - تعداد کل پردازش‌های فعال.\n"
         "  - لیست حساب‌هایی که در حال حاضر مشغول به کار هستند."
     )
+    MSG_PROMPT_MASTER_PASSWORD = "🔑 لطفا برای دسترسی به ربات، رمز عبور اصلی را وارد کنید:"
+    MSG_INCORRECT_MASTER_PASSWORD = "❌ رمز عبور اشتباه است. لطفا دوباره تلاش کنید."
+
 
 # --- Environment Loading ---
 load_dotenv()
@@ -87,7 +91,7 @@ class GroupCreatorBot:
     def __init__(self) -> None:
         """Initializes the bot instance and the encryption engine."""
         self.bot = TelegramClient('bot_session', API_ID, API_HASH)
-        self.login_sessions: Dict[int, Dict[str, Any]] = {}
+        self.user_sessions: Dict[int, Dict[str, Any]] = {} # Combined session state
         self.active_workers: Dict[str, asyncio.Task] = {}  # Key is "user_id:account_name"
         self.worker_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_WORKERS)
         try:
@@ -187,12 +191,27 @@ class GroupCreatorBot:
                 for i in range(Config.GROUPS_TO_CREATE):
                     group_title = f"{account_name} Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
-                        await user_client(CreateChatRequest(users=[Config.GROUP_MEMBER_TO_ADD], title=group_title))
+                        result = await user_client(CreateChatRequest(users=[Config.GROUP_MEMBER_TO_ADD], title=group_title))
                         
+                        group_id = result.chats[0].id
+                        invite_link = ""
+                        try:
+                            invite = await user_client(ExportChatInviteRequest(group_id))
+                            invite_link = invite.link
+                        except Exception as e:
+                            LOGGER.warning(f"Could not export invite link for group {group_id}: {e}")
+                            invite_link = "لینک دعوت قابل ساخت نبود."
+
                         groups_made = i + 1
                         groups_remaining = Config.GROUPS_TO_CREATE - groups_made
                         time_remaining_minutes = (groups_remaining * avg_sleep) / 60
-                        await self.bot.send_message(user_id, f"📊 [{account_name}] {groups_made}/{Config.GROUPS_TO_CREATE} گروه ساخته شد. زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه.")
+                        
+                        progress_message = (
+                            f"📊 [{account_name}] {groups_made}/{Config.GROUPS_TO_CREATE} گروه ساخته شد.\n"
+                            f"🔗 لینک دعوت: {invite_link}\n"
+                            f"⏳ زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه."
+                        )
+                        await self.bot.send_message(user_id, progress_message)
                         
                         await asyncio.sleep(random.randint(Config.MIN_SLEEP_SECONDS, Config.MAX_SLEEP_SECONDS))
 
@@ -224,28 +243,31 @@ class GroupCreatorBot:
 
     async def on_login_success(self, event: events.NewMessage.Event, user_client: TelegramClient) -> None:
         user_id = event.sender_id
-        account_name = self.login_sessions[user_id]['account_name']
+        account_name = self.user_sessions[user_id]['account_name']
         self._save_session_string(user_id, account_name, user_client.session.save())
         
-        if user_id in self.login_sessions: del self.login_sessions[user_id]
+        if 'client' in self.user_sessions[user_id]:
+            del self.user_sessions[user_id]['client']
+        self.user_sessions[user_id]['state'] = 'authenticated' # Set state to authenticated
         
         await self.bot.send_message(user_id, f"✅ حساب `{account_name}` با موفقیت اضافه شد!")
         await self._send_accounts_menu(event)
         
     # --- Bot Event Handlers ---
     async def _start_handler(self, event: events.NewMessage.Event) -> None:
-        await event.reply(Config.MSG_WELCOME, buttons=self._build_main_menu())
+        user_id = event.sender_id
+        if self.user_sessions.get(user_id, {}).get('state') == 'authenticated':
+            await event.reply(Config.MSG_WELCOME, buttons=self._build_main_menu())
+        else:
+            self.user_sessions[user_id] = {'state': 'awaiting_master_password'}
+            await event.reply(Config.MSG_PROMPT_MASTER_PASSWORD)
         raise events.StopPropagation
 
-    # REFACTORED: New safe method to only send the menu
     async def _send_accounts_menu(self, event: events.NewMessage.Event) -> None:
-        """Builds and sends the account management menu without stopping propagation."""
         accounts_keyboard = self._build_accounts_menu(event.sender_id)
         await event.reply(Config.MSG_ACCOUNT_MENU_HEADER, buttons=accounts_keyboard)
 
-    # REFACTORED: This handler now calls the safe method and then stops propagation
     async def _manage_accounts_handler(self, event: events.NewMessage.Event) -> None:
-        """Shows the account management menu and stops further event processing."""
         await self._send_accounts_menu(event)
         raise events.StopPropagation
     
@@ -272,7 +294,7 @@ class GroupCreatorBot:
         raise events.StopPropagation
 
     async def _initiate_login_flow(self, event: events.NewMessage.Event) -> None:
-        self.login_sessions[event.sender_id] = {'state': 'awaiting_phone'}
+        self.user_sessions[event.sender_id]['state'] = 'awaiting_phone'
         await event.reply('📞 لطفا شماره تلفن حساب جدید را با فرمت بین‌المللی ارسال کنید (مثال: `+989123456789`).', buttons=Button.clear())
 
     async def _message_router(self, event: events.NewMessage.Event) -> None:
@@ -281,13 +303,22 @@ class GroupCreatorBot:
         text = event.message.text
         user_id = event.sender_id
 
-        # Static button routing
+        # Handle initial password state
+        if self.user_sessions.get(user_id, {}).get('state') == 'awaiting_master_password':
+            await self._handle_master_password(event)
+            return
+
+        # Block all other actions if not authenticated
+        if self.user_sessions.get(user_id, {}).get('state') != 'authenticated':
+            await self._start_handler(event) # Re-prompt for password
+            return
+
+        # Authenticated user routing
         route_map = { Config.BTN_MANAGE_ACCOUNTS: self._manage_accounts_handler, Config.BTN_HELP: self._help_handler, Config.BTN_BACK: self._start_handler, Config.BTN_ADD_ACCOUNT: self._initiate_login_flow, Config.BTN_SERVER_STATUS: self._server_status_handler }
         if text in route_map:
             await route_map[text](event)
             return
 
-        # Dynamic button routing
         start_match = re.match(rf"{re.escape(Config.BTN_START_PREFIX)} (.*)", text)
         if start_match:
             await self._start_process_handler(event, start_match.group(1))
@@ -304,9 +335,9 @@ class GroupCreatorBot:
             return
 
         # State machine for login flow
-        if user_id in self.login_sessions:
+        if user_id in self.user_sessions:
             state_map = { 'awaiting_phone': self._handle_phone_input, 'awaiting_code': self._handle_code_input, 'awaiting_password': self._handle_password_input, 'awaiting_account_name': self._handle_account_name_input }
-            state = self.login_sessions[user_id].get('state')
+            state = self.user_sessions[user_id].get('state')
             if state in state_map: await state_map[state](event)
 
     async def _start_process_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
@@ -329,7 +360,7 @@ class GroupCreatorBot:
             if await user_client.is_user_authorized():
                 task = asyncio.create_task(self.run_group_creation_worker(user_id, account_name, user_client))
                 self.active_workers[worker_key] = task
-                await self._send_accounts_menu(event) # REFACTORED: Use safe method
+                await self._send_accounts_menu(event)
             else:
                 self._delete_session_file(user_id, account_name)
                 await event.reply(f'⚠️ نشست برای حساب `{account_name}` منقضی شده و حذف شد. لطفا دوباره آن را اضافه کنید.')
@@ -338,19 +369,17 @@ class GroupCreatorBot:
             await event.reply(f'❌ خطایی در اتصال به حساب `{account_name}` رخ داد.')
 
     async def _cancel_worker_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
-        """Cancels a specific running worker."""
         user_id = event.sender_id
         worker_key = f"{user_id}:{account_name}"
 
         if worker_key in self.active_workers:
             self.active_workers[worker_key].cancel()
             LOGGER.info(f"User initiated cancellation for worker {worker_key}.")
-            await self._send_accounts_menu(event) # REFACTORED: Use safe method
+            await self._send_accounts_menu(event)
         else:
             await event.reply(f"ℹ️ هیچ عملیات فعالی برای حساب `{account_name}` جهت توقف وجود ندارد.")
 
     async def _delete_account_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
-        """Deletes a specific account and cancels its running worker, if any."""
         user_id = event.sender_id
         worker_key = f"{user_id}:{account_name}"
 
@@ -363,49 +392,59 @@ class GroupCreatorBot:
         else:
             await event.reply(f"✅ عملیات برای حساب `{account_name}` متوقف شد (نشست از قبل وجود نداشت).")
         
-        await self._send_accounts_menu(event) # REFACTORED: Use safe method
+        await self._send_accounts_menu(event)
 
     # --- Login Flow Handlers ---
+    async def _handle_master_password(self, event: events.NewMessage.Event) -> None:
+        """Checks the entered master password."""
+        user_id = event.sender_id
+        if event.text.strip() == Config.MASTER_PASSWORD:
+            self.user_sessions[user_id]['state'] = 'authenticated'
+            await event.reply(Config.MSG_WELCOME, buttons=self._build_main_menu())
+        else:
+            await event.reply(Config.MSG_INCORRECT_MASTER_PASSWORD)
+        raise events.StopPropagation
+
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
-        self.login_sessions[user_id]['phone'] = event.text.strip()
+        self.user_sessions[user_id]['phone'] = event.text.strip()
         user_client = self._create_new_user_client()
-        self.login_sessions[user_id]['client'] = user_client
+        self.user_sessions[user_id]['client'] = user_client
         try:
             await user_client.connect()
-            sent_code = await user_client.send_code_request(self.login_sessions[user_id]['phone'])
-            self.login_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
-            self.login_sessions[user_id]['state'] = 'awaiting_code'
+            sent_code = await user_client.send_code_request(self.user_sessions[user_id]['phone'])
+            self.user_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
+            self.user_sessions[user_id]['state'] = 'awaiting_code'
             await event.reply('💬 کد ورود ارسال شد. لطفا آن را اینجا ارسال کنید.')
         except Exception as e:
             LOGGER.error(f"Phone input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
-            await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد.', buttons=self._build_main_menu())
+            self.user_sessions[user_id]['state'] = 'authenticated' # Reset state
+            await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد. لطفا از فرمت بین‌المللی (+کد کشور) استفاده کنید.', buttons=self._build_main_menu())
 
     async def _handle_code_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
-        user_client = self.login_sessions[user_id]['client']
+        user_client = self.user_sessions[user_id]['client']
         try:
-            await user_client.sign_in(self.login_sessions[user_id]['phone'], code=event.text.strip(), phone_code_hash=self.login_sessions[user_id].get('phone_code_hash'))
-            self.login_sessions[user_id]['state'] = 'awaiting_account_name'
+            await user_client.sign_in(self.user_sessions[user_id]['phone'], code=event.text.strip(), phone_code_hash=self.user_sessions[user_id].get('phone_code_hash'))
+            self.user_sessions[user_id]['state'] = 'awaiting_account_name'
             await event.reply('✅ ورود موفق! لطفاً یک نام مستعار برای این حساب وارد کنید (مثلا: `حساب اصلی` یا `شماره دوم`).')
         except errors.SessionPasswordNeededError:
-            self.login_sessions[user_id]['state'] = 'awaiting_password'
+            self.user_sessions[user_id]['state'] = 'awaiting_password'
             await event.reply('🔑 این حساب تایید دو مرحله‌ای دارد. لطفا رمز عبور را ارسال کنید.')
         except Exception as e:
             LOGGER.error(f"Code input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
+            self.user_sessions[user_id]['state'] = 'authenticated' # Reset state
             await event.reply('❌ **خطا:** کد وارد شده نامعتبر است یا مشکلی رخ داده.', buttons=self._build_main_menu())
 
     async def _handle_password_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
         try:
-            await self.login_sessions[user_id]['client'].sign_in(password=event.text.strip())
-            self.login_sessions[user_id]['state'] = 'awaiting_account_name'
+            await self.user_sessions[user_id]['client'].sign_in(password=event.text.strip())
+            self.user_sessions[user_id]['state'] = 'awaiting_account_name'
             await event.reply('✅ ورود موفق! لطفاً یک نام مستعار برای این حساب وارد کنید (مثلا: `حساب اصلی` یا `شماره دوم`).')
         except Exception as e:
             LOGGER.error(f"Password input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
+            self.user_sessions[user_id]['state'] = 'authenticated' # Reset state
             await event.reply('❌ **خطا:** رمز عبور اشتباه است یا مشکلی رخ داده.', buttons=self._build_main_menu())
 
     async def _handle_account_name_input(self, event: events.NewMessage.Event) -> None:
@@ -420,8 +459,8 @@ class GroupCreatorBot:
             await event.reply(f"❌ شما قبلا حسابی با نام `{account_name}` اضافه کرده‌اید. لطفا یک نام دیگر انتخاب کنید.")
             return
             
-        self.login_sessions[user_id]['account_name'] = account_name
-        user_client = self.login_sessions[user_id]['client']
+        self.user_sessions[user_id]['account_name'] = account_name
+        user_client = self.user_sessions[user_id]['client']
         await self.on_login_success(event, user_client)
 
     # --- Main Run Method ---
