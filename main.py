@@ -2,25 +2,40 @@ import asyncio
 import os
 import random
 import time
+import logging
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CreateChatRequest
 from dotenv import load_dotenv
+# To implement encryption, you would install and import this
+# from cryptography.fernet import Fernet
 
-# Load variables from the .env file
-load_dotenv()
+# --- Basic Logging Setup ---
+# This will log detailed info to a file and the console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot_activity.log"),
+        logging.StreamHandler()
+    ]
+)
 
 # --- Configuration ---
+load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# You would store your single encryption key here
+# ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+# fernet = Fernet(ENCRYPTION_KEY.encode())
 
 if not all([API_ID, API_HASH, BOT_TOKEN]):
-    raise ValueError("Missing one or more required environment variables in your .env file.")
+    raise ValueError("Missing required environment variables in your .env file.")
 
 API_ID = int(API_ID)
 
-# In-memory dictionary to manage login states
+# In-memory storage. For a real app, replace this with database calls.
 user_sessions = {}
 
 # --- Helper Functions ---
@@ -40,23 +55,23 @@ async def run_group_creation_worker(event, client):
     """The main background task that creates 50 groups for the logged-in user."""
     await event.reply('✅ **ورود موفقیت‌آمیز بود!**\n\nفرآیند ساخت ۵۰ گروه در پس‌زمینه آغاز شد. این کار ممکن است چندین ساعت طول بکشد.')
     if event.sender_id in user_sessions:
-        del user_sessions[event.sender_id]
+        del user_sessions[event.sender_id] # Replace with DB update
     try:
         user_to_add = '@BotFather'
         for i in range(50):
             group_title = f"Automated Group #{random.randint(1000, 9999)} - {i + 1}"
             try:
                 await client(CreateChatRequest(users=[user_to_add], title=group_title))
-                print(f"Successfully created group: {group_title}")
+                logging.info(f"Successfully created group: {group_title} for user {event.sender_id}")
                 sleep_duration = random.randint(400, 1000)
-                print(f"Waiting for {sleep_duration} seconds...")
+                logging.info(f"Waiting for {sleep_duration} seconds...")
                 await asyncio.sleep(sleep_duration)
             except errors.FloodWaitError as fwe:
-                print(f"Flood wait requested. Sleeping for {fwe.seconds} seconds.")
+                logging.warning(f"Flood wait for user {event.sender_id}. Sleeping for {fwe.seconds} seconds.")
                 await event.sender.send_message(f"⏳ به دلیل محدودیت تلگرام، عملیات به مدت {fwe.seconds / 60:.2f} دقیقه متوقف شد.")
                 await asyncio.sleep(fwe.seconds)
             except Exception as e:
-                print(f"Could not create group {group_title}. Error: {e}")
+                logging.error(f"Could not create group {group_title} for user {event.sender_id}", exc_info=True)
                 await event.sender.send_message(f"❌ ساخت گروه به دلیل خطا ناموفق بود: {e}")
                 await asyncio.sleep(60)
     finally:
@@ -65,10 +80,8 @@ async def run_group_creation_worker(event, client):
 
 # --- Main Application Logic ---
 async def main():
-    # Initialize the client inside the async function
     client = TelegramClient('bot_session', API_ID, API_HASH)
 
-    # --- Define Event Handlers within main ---
     @client.on(events.NewMessage(pattern='/start'))
     async def start(event):
         user_id = event.sender_id
@@ -77,17 +90,18 @@ async def main():
             'این ربات برای ساخت گروه به صورت اتوماتیک است.\n\n'
             'لطفا شماره تلفن تلگرام خود را با فرمت بین‌المللی ارسال کنید (مثال: +989123456789).'
         )
+        # For a real app, you would create a record in your database here
         user_sessions[user_id] = {'state': 'awaiting_phone'}
         raise events.StopPropagation
 
     @client.on(events.NewMessage)
     async def handle_all_messages(event):
         user_id = event.sender_id
+        # For a real app, you would fetch the user's state from the database
         if user_id not in user_sessions:
             return
         state = user_sessions[user_id].get('state')
         
-        # State machine to guide the user
         if state == 'awaiting_phone':
             await handle_phone_input(event)
         elif state == 'awaiting_code':
@@ -98,50 +112,60 @@ async def main():
     async def handle_phone_input(event):
         user_id = event.sender_id
         phone = event.text.strip()
-        user_sessions[user_id]['phone'] = phone
         user_client = create_new_user_client()
+        # Store client instance in memory; in a real app, you wouldn't store the object itself
         user_sessions[user_id]['client'] = user_client
         try:
             await user_client.connect()
             sent_code = await user_client.send_code_request(phone)
+            # Store necessary temp data in memory or DB
             user_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
             await event.reply('یک کد ورود به حساب تلگرام شما ارسال شد. لطفا آن را اینجا ارسال کنید.')
-            user_sessions[user_id]['state'] = 'awaiting_code'
+            user_sessions[user_id]['state'] = 'awaiting_code' # Update state in DB
         except Exception as e:
-            await event.reply(f'❌ **خطا:** {e}')
-            del user_sessions[user_id]
+            logging.error(f"Phone input error for user {user_id}: {e}", exc_info=True)
+            await event.reply(f'❌ **خطا:** یک مشکل داخلی رخ داده است.')
+            del user_sessions[user_id] # Delete record from DB
 
     async def handle_code_input(event):
         user_id = event.sender_id
         code = event.text.strip()
         user_client = user_sessions[user_id]['client']
-        phone = user_sessions[user_id]['phone']
-        phone_code_hash = user_sessions[user_id]['phone_code_hash']
+        phone_code_hash = user_sessions[user_id].get('phone_code_hash')
         try:
-            await user_client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            await user_client.sign_in(event.text.strip(), phone_code_hash=phone_code_hash)
+            # Login successful: save encrypted session string to DB
+            # session_string = user_client.session.save()
+            # encrypted_session = fernet.encrypt(session_string.encode())
+            # db.save_session(user_id, encrypted_session)
             asyncio.create_task(run_group_creation_worker(event, user_client))
         except errors.SessionPasswordNeededError:
             await event.reply('حساب شما دارای تایید دو مرحله‌ای است. لطفا رمز عبور خود را ارسال کنید.')
-            user_sessions[user_id]['state'] = 'awaiting_password'
+            user_sessions[user_id]['state'] = 'awaiting_password' # Update state in DB
         except Exception as e:
-            await event.reply(f'❌ **خطا:** {e}')
-            del user_sessions[user_id]
+            logging.error(f"Code input error for user {user_id}: {e}", exc_info=True)
+            await event.reply(f'❌ **خطا:** یک مشکل داخلی رخ داده است.')
+            del user_sessions[user_id] # Delete record from DB
 
     async def handle_password_input(event):
         user_id = event.sender_id
-        password = event.text.strip()
         user_client = user_sessions[user_id]['client']
         try:
-            await user_client.sign_in(password=password)
+            await user_client.sign_in(password=event.text.strip())
+            # Login successful: save encrypted session string to DB
+            # session_string = user_client.session.save()
+            # encrypted_session = fernet.encrypt(session_string.encode())
+            # db.save_session(user_id, encrypted_session)
             asyncio.create_task(run_group_creation_worker(event, user_client))
         except Exception as e:
-            await event.reply(f'❌ **خطا:** {e}')
-            del user_sessions[user_id]
+            logging.error(f"Password input error for user {user_id}: {e}", exc_info=True)
+            await event.reply(f'❌ **خطا:** یک مشکل داخلی رخ داده است.')
+            del user_sessions[user_id] # Delete record from DB
 
     # --- Start the Bot ---
-    print("Starting bot...")
+    logging.info("Starting bot...")
     await client.start(bot_token=BOT_TOKEN)
-    print("Bot service has started successfully.")
+    logging.info("Bot service has started successfully.")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
