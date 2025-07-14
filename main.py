@@ -25,7 +25,48 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger(__name__)
 
-# --- Configuration ---
+# --- Centralized Configuration ---
+class Config:
+    """Holds all configurable values and UI strings for the bot."""
+    # Bot Settings
+    MAX_CONCURRENT_WORKERS = 5
+    GROUPS_TO_CREATE = 50
+    MIN_SLEEP_SECONDS = 300  # 5 minutes
+    MAX_SLEEP_SECONDS = 600  # 10 minutes
+    GROUP_MEMBER_TO_ADD = '@BotFather'
+
+    # --- UI Text & Buttons ---
+    # Main Menu
+    BTN_MANAGE_ACCOUNTS = "👤 مدیریت حساب‌ها"
+    BTN_SERVER_STATUS = "📊 وضعیت سرور"
+    BTN_HELP = "ℹ️ راهنما"
+    
+    # Account Management Menu
+    BTN_ADD_ACCOUNT = "➕ افزودن حساب جدید"
+    BTN_BACK = "⬅️ بازگشت"
+    BTN_START_PREFIX = "🟢 شروع برای"
+    BTN_STOP_PREFIX = "⏹️ توقف برای"
+    BTN_DELETE_PREFIX = "🗑️ حذف"
+    
+    # --- Messages ---
+    MSG_WELCOME = "**🤖 به ربات سازنده گروه خوش آمدید!**"
+    MSG_ACCOUNT_MENU_HEADER = "👤 **مدیریت حساب‌ها**\n\nاز این منو می‌توانید حساب‌های خود را مدیریت کرده و عملیات ساخت گروه را برای هرکدام آغاز یا متوقف کنید."
+    MSG_HELP_TEXT = (
+        "**راهنمای جامع ربات**\n\n"
+        "این ربات به شما اجازه می‌دهد تا با چندین حساب تلگرام به صورت همزمان گروه‌های جدید بسازید.\n\n"
+        f"**{BTN_MANAGE_ACCOUNTS}**\n"
+        "در این بخش می‌توانید حساب‌های خود را مدیریت کنید:\n"
+        f"  - `{BTN_ADD_ACCOUNT}`: یک شماره تلفن جدید اضافه کنید و برای آن یک نام مستعار انتخاب کنید.\n"
+        f"  - `{BTN_START_PREFIX} [نام حساب]`: عملیات ساخت گروه را برای حساب مشخص شده آغاز می‌کند.\n"
+        f"  - `{BTN_STOP_PREFIX} [نام حساب]`: عملیات در حال اجرا برای یک حساب را متوقف می‌کند.\n"
+        f"  - `{BTN_DELETE_PREFIX} [نام حساب]`: یک حساب و تمام اطلاعات آن را برای همیشه حذف می‌کند.\n\n"
+        f"**{BTN_SERVER_STATUS}**\n"
+        "این گزینه اطلاعات لحظه‌ای درباره وضعیت ربات را نمایش می‌دهد:\n"
+        "  - تعداد کل پردازش‌های فعال.\n"
+        "  - لیست حساب‌هایی که در حال حاضر مشغول به کار هستند."
+    )
+
+# --- Environment Loading ---
 load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
@@ -38,18 +79,7 @@ if not all([API_ID, API_HASH, BOT_TOKEN, ENCRYPTION_KEY]):
 API_ID = int(API_ID)
 SESSIONS_DIR = Path("sessions")
 SESSIONS_DIR.mkdir(exist_ok=True)
-MAX_CONCURRENT_WORKERS = 5
 
-# --- Bot Menu Buttons ---
-BTN_MANAGE_ACCOUNTS = "👤 مدیریت حساب‌ها"
-BTN_HELP = "ℹ️ راهنما"
-BTN_BACK = "⬅️ بازگشت"
-BTN_ADD_ACCOUNT = "➕ افزودن حساب جدید"
-
-MAIN_MENU_KEYBOARD = [
-    [Button.text(BTN_MANAGE_ACCOUNTS)],
-    [Button.text(BTN_HELP)],
-]
 
 class GroupCreatorBot:
     """A class to encapsulate the bot's logic for managing multiple accounts."""
@@ -59,7 +89,7 @@ class GroupCreatorBot:
         self.bot = TelegramClient('bot_session', API_ID, API_HASH)
         self.login_sessions: Dict[int, Dict[str, Any]] = {}
         self.active_workers: Dict[str, asyncio.Task] = {}  # Key is "user_id:account_name"
-        self.worker_semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
+        self.worker_semaphore = asyncio.Semaphore(Config.MAX_CONCURRENT_WORKERS)
         try:
             self.fernet = Fernet(ENCRYPTION_KEY.encode())
         except (ValueError, TypeError):
@@ -77,35 +107,29 @@ class GroupCreatorBot:
             return None
 
     def _get_session_path(self, user_id: int, account_name: str) -> Path:
-        """Gets the session path for a specific user and account name."""
         safe_account_name = re.sub(r'[^a-zA-Z0-9_-]', '', account_name)
         return SESSIONS_DIR / f"user_{user_id}__{safe_account_name}.session"
 
     def _get_user_accounts(self, user_id: int) -> List[str]:
-        """Scans the session directory and returns a list of account names for a user."""
         accounts = []
         for f in SESSIONS_DIR.glob(f"user_{user_id}__*.session"):
             match = re.search(f"user_{user_id}__(.*)\\.session", f.name)
             if match:
                 accounts.append(match.group(1))
-        return accounts
+        return sorted(accounts)
 
     def _save_session_string(self, user_id: int, account_name: str, session_string: str) -> None:
-        """Encrypts and saves a user's session for a specific account."""
         encrypted_session = self._encrypt_data(session_string)
         session_file = self._get_session_path(user_id, account_name)
         session_file.write_bytes(encrypted_session)
         LOGGER.info(f"Encrypted session saved for user {user_id} as account '{account_name}'.")
 
     def _load_session_string(self, user_id: int, account_name: str) -> Optional[str]:
-        """Loads and decrypts a session for a specific account."""
         session_file = self._get_session_path(user_id, account_name)
-        if not session_file.exists():
-            return None
+        if not session_file.exists(): return None
         return self._decrypt_data(session_file.read_bytes())
 
     def _delete_session_file(self, user_id: int, account_name: str) -> bool:
-        """Deletes a session file for a specific account."""
         session_path = self._get_session_path(user_id, account_name)
         if session_path.exists():
             try:
@@ -122,8 +146,13 @@ class GroupCreatorBot:
         return TelegramClient(session, API_ID, API_HASH, **random.choice(device_params))
         
     # --- Dynamic UI Builder ---
+    def _build_main_menu(self) -> List[List[Button]]:
+        return [
+            [Button.text(Config.BTN_MANAGE_ACCOUNTS)],
+            [Button.text(Config.BTN_SERVER_STATUS), Button.text(Config.BTN_HELP)],
+        ]
+
     def _build_accounts_menu(self, user_id: int) -> List[List[Button]]:
-        """Builds the keyboard for the account management menu."""
         accounts = self._get_user_accounts(user_id)
         keyboard = []
         if not accounts:
@@ -131,14 +160,18 @@ class GroupCreatorBot:
         else:
             for acc_name in accounts:
                 worker_key = f"{user_id}:{acc_name}"
-                status_icon = "⏳" if worker_key in self.active_workers else "🟢"
-                keyboard.append([
-                    Button.text(f"{status_icon} شروع برای {acc_name}"),
-                    Button.text(f"🗑️ حذف {acc_name}")
-                ])
+                if worker_key in self.active_workers:
+                    # If worker is active, show a "Stop" button
+                    keyboard.append([Button.text(f"{Config.BTN_STOP_PREFIX} {acc_name}")])
+                else:
+                    # If inactive, show "Start" and "Delete" buttons
+                    keyboard.append([
+                        Button.text(f"{Config.BTN_START_PREFIX} {acc_name}"),
+                        Button.text(f"{Config.BTN_DELETE_PREFIX} {acc_name}")
+                    ])
         
-        keyboard.append([Button.text(BTN_ADD_ACCOUNT)])
-        keyboard.append([Button.text(BTN_BACK)])
+        keyboard.append([Button.text(Config.BTN_ADD_ACCOUNT)])
+        keyboard.append([Button.text(Config.BTN_BACK)])
         return keyboard
 
     # --- Main Worker Task ---
@@ -148,28 +181,23 @@ class GroupCreatorBot:
             async with self.worker_semaphore:
                 LOGGER.info(f"Worker started for {worker_key}. Semaphore acquired.")
                 
-                # CHANGED: Increased sleep time for production use
-                min_sleep, max_sleep = 300, 600
-                avg_sleep_per_group = (min_sleep + max_sleep) / 2
-                estimated_total_minutes = (50 * avg_sleep_per_group) / 60
+                avg_sleep = (Config.MIN_SLEEP_SECONDS + Config.MAX_SLEEP_SECONDS) / 2
+                estimated_total_minutes = (Config.GROUPS_TO_CREATE * avg_sleep) / 60
                 
-                # ADDED: Initial time estimate message
                 await self.bot.send_message(user_id, f"✅ **عملیات برای حساب `{account_name}` آغاز شد!**\n\n⏳ تخمین زمان کل عملیات: حدود {estimated_total_minutes:.0f} دقیقه.")
 
-                for i in range(50):
+                for i in range(Config.GROUPS_TO_CREATE):
                     group_title = f"{account_name} Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
-                        await user_client(CreateChatRequest(users=['@BotFather'], title=group_title))
+                        await user_client(CreateChatRequest(users=[Config.GROUP_MEMBER_TO_ADD], title=group_title))
                         
-                        # ADDED: Progress and time remaining message
                         groups_made = i + 1
-                        groups_remaining = 50 - groups_made
-                        time_remaining_minutes = (groups_remaining * avg_sleep_per_group) / 60
-                        await self.bot.send_message(user_id, f"📊 [{account_name}] {groups_made}/50 گروه ساخته شد. زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه.")
+                        groups_remaining = Config.GROUPS_TO_CREATE - groups_made
+                        time_remaining_minutes = (groups_remaining * avg_sleep) / 60
+                        await self.bot.send_message(user_id, f"📊 [{account_name}] {groups_made}/{Config.GROUPS_TO_CREATE} گروه ساخته شد. زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه.")
                         
-                        await asyncio.sleep(random.randint(min_sleep, max_sleep))
+                        await asyncio.sleep(random.randint(Config.MIN_SLEEP_SECONDS, Config.MAX_SLEEP_SECONDS))
 
-                    # ADDED: Better error handling for restricted users
                     except errors.UserRestrictedError:
                         LOGGER.error(f"Worker for {worker_key} failed: User is restricted.")
                         await self.bot.send_message(user_id, f"❌ حساب `{account_name}` توسط تلگرام محدود شده و قادر به ساخت گروه نیست. عملیات متوقف شد.")
@@ -183,10 +211,15 @@ class GroupCreatorBot:
                         await self.bot.send_message(user_id, f"❌ [{account_name}] خطای غیرمنتظره در ساخت گروه رخ داد.")
                         break
         except asyncio.CancelledError:
-            LOGGER.info(f"Task for {worker_key} was cancelled.")
+            LOGGER.info(f"Task for {worker_key} was cancelled by user.")
+            await self.bot.send_message(user_id, f"⏹️ عملیات برای حساب `{account_name}` توسط شما متوقف شد.")
         finally:
             LOGGER.info(f"Worker finished for {worker_key}.")
-            await self.bot.send_message(user_id, f"🏁 چرخه ساخت گروه برای حساب `{account_name}` به پایان رسید.")
+            if worker_key not in self.active_workers or self.active_workers[worker_key].cancelled():
+                pass # Already handled by cancellation message
+            else:
+                 await self.bot.send_message(user_id, f"🏁 چرخه ساخت گروه برای حساب `{account_name}` به پایان رسید.")
+
             if worker_key in self.active_workers:
                 del self.active_workers[worker_key]
             if user_client.is_connected():
@@ -198,65 +231,82 @@ class GroupCreatorBot:
         account_name = self.login_sessions[user_id]['account_name']
         self._save_session_string(user_id, account_name, user_client.session.save())
         
-        if user_id in self.login_sessions:
-            del self.login_sessions[user_id]
+        if user_id in self.login_sessions: del self.login_sessions[user_id]
         
         await self.bot.send_message(user_id, f"✅ حساب `{account_name}` با موفقیت اضافه شد!")
-        await self._manage_accounts_handler(event) # Show the updated accounts menu
+        await self._manage_accounts_handler(event)
         
     # --- Bot Event Handlers ---
     async def _start_handler(self, event: events.NewMessage.Event) -> None:
-        await event.reply('**🤖 به ربات سازنده گروه خوش آمدید!**', buttons=MAIN_MENU_KEYBOARD)
+        await event.reply(Config.MSG_WELCOME, buttons=self._build_main_menu())
         raise events.StopPropagation
 
     async def _manage_accounts_handler(self, event: events.NewMessage.Event) -> None:
-        """Shows the account management menu."""
-        user_id = event.sender_id
-        accounts_keyboard = self._build_accounts_menu(user_id)
-        await event.reply("👤 **مدیریت حساب‌ها**\n\nاز این منو می‌توانید حساب‌های خود را مدیریت کرده و عملیات ساخت گروه را برای هرکدام آغاز کنید.", buttons=accounts_keyboard)
+        accounts_keyboard = self._build_accounts_menu(event.sender_id)
+        await event.reply(Config.MSG_ACCOUNT_MENU_HEADER, buttons=accounts_keyboard)
+        raise events.StopPropagation
+    
+    async def _server_status_handler(self, event: events.NewMessage.Event) -> None:
+        active_count = len(self.active_workers)
+        max_workers = Config.MAX_CONCURRENT_WORKERS
+        
+        status_text = f"**📊 وضعیت سرور**\n\n"
+        status_text += f"**پردازش‌های فعال:** {active_count} / {max_workers}\n"
+        
+        if active_count > 0:
+            status_text += "\n**حساب‌های در حال کار:**\n"
+            for worker_key in self.active_workers.keys():
+                _, acc_name = worker_key.split(":", 1)
+                status_text += f"- `{acc_name}`\n"
+        else:
+            status_text += "\nℹ️ در حال حاضر هیچ حسابی مشغول به کار نیست."
+            
+        await event.reply(status_text, buttons=self._build_main_menu())
+        raise events.StopPropagation
+
+    async def _help_handler(self, event: events.NewMessage.Event) -> None:
+        await event.reply(Config.MSG_HELP_TEXT, buttons=self._build_main_menu())
         raise events.StopPropagation
 
     async def _initiate_login_flow(self, event: events.NewMessage.Event) -> None:
-        """Starts the phone number collection step for a new login."""
         self.login_sessions[event.sender_id] = {'state': 'awaiting_phone'}
         await event.reply('📞 لطفا شماره تلفن حساب جدید را با فرمت بین‌المللی ارسال کنید (مثال: `+989123456789`).', buttons=Button.clear())
 
     async def _message_router(self, event: events.NewMessage.Event) -> None:
-        """Routes all incoming messages to the correct handler."""
-        if not isinstance(getattr(event, 'message', None), Message) or not event.message.text:
-            return
+        if not isinstance(getattr(event, 'message', None), Message) or not event.message.text: return
 
         text = event.message.text
         user_id = event.sender_id
 
         # Static button routing
-        route_map = { BTN_MANAGE_ACCOUNTS: self._manage_accounts_handler, BTN_HELP: self._start_handler, BTN_BACK: self._start_handler, BTN_ADD_ACCOUNT: self._initiate_login_flow }
+        route_map = { Config.BTN_MANAGE_ACCOUNTS: self._manage_accounts_handler, Config.BTN_HELP: self._help_handler, Config.BTN_BACK: self._start_handler, Config.BTN_ADD_ACCOUNT: self._initiate_login_flow, Config.BTN_SERVER_STATUS: self._server_status_handler }
         if text in route_map:
             await route_map[text](event)
             return
 
-        # Regex-based routing for dynamic buttons
-        start_match = re.match(r".* شروع برای (.*)", text)
+        # Dynamic button routing
+        start_match = re.match(rf"{re.escape(Config.BTN_START_PREFIX)} (.*)", text)
         if start_match:
-            acc_name = start_match.group(1)
-            await self._start_process_handler(event, acc_name)
+            await self._start_process_handler(event, start_match.group(1))
             return
 
-        delete_match = re.match(r".* حذف (.*)", text)
+        stop_match = re.match(rf"{re.escape(Config.BTN_STOP_PREFIX)} (.*)", text)
+        if stop_match:
+            await self._cancel_worker_handler(event, stop_match.group(1))
+            return
+
+        delete_match = re.match(rf"{re.escape(Config.BTN_DELETE_PREFIX)} (.*)", text)
         if delete_match:
-            acc_name = delete_match.group(1)
-            await self._delete_account_handler(event, acc_name)
+            await self._delete_account_handler(event, delete_match.group(1))
             return
 
         # State machine for login flow
         if user_id in self.login_sessions:
             state_map = { 'awaiting_phone': self._handle_phone_input, 'awaiting_code': self._handle_code_input, 'awaiting_password': self._handle_password_input, 'awaiting_account_name': self._handle_account_name_input }
             state = self.login_sessions[user_id].get('state')
-            if state in state_map:
-                await state_map[state](event)
+            if state in state_map: await state_map[state](event)
 
     async def _start_process_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
-        """Starts the group creation worker for a specific account."""
         user_id = event.sender_id
         worker_key = f"{user_id}:{account_name}"
 
@@ -276,6 +326,7 @@ class GroupCreatorBot:
             if await user_client.is_user_authorized():
                 task = asyncio.create_task(self.run_group_creation_worker(user_id, account_name, user_client))
                 self.active_workers[worker_key] = task
+                await self._manage_accounts_handler(event) # Refresh menu to show "Stop"
             else:
                 self._delete_session_file(user_id, account_name)
                 await event.reply(f'⚠️ نشست برای حساب `{account_name}` منقضی شده و حذف شد. لطفا دوباره آن را اضافه کنید.')
@@ -283,29 +334,37 @@ class GroupCreatorBot:
             LOGGER.error(f"Failed to start process for {worker_key}", exc_info=e)
             await event.reply(f'❌ خطایی در اتصال به حساب `{account_name}` رخ داد.')
 
+    async def _cancel_worker_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
+        """Cancels a specific running worker."""
+        user_id = event.sender_id
+        worker_key = f"{user_id}:{account_name}"
+
+        if worker_key in self.active_workers:
+            self.active_workers[worker_key].cancel()
+            # The task will clean itself up from the dict in its `finally` block.
+            LOGGER.info(f"User initiated cancellation for worker {worker_key}.")
+            # No need to send a message here, the worker's `except CancelledError` will.
+            await self._manage_accounts_handler(event) # Refresh menu
+        else:
+            await event.reply(f"ℹ️ هیچ عملیات فعالی برای حساب `{account_name}` جهت توقف وجود ندارد.")
+
     async def _delete_account_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
         """Deletes a specific account and cancels its running worker, if any."""
         user_id = event.sender_id
         worker_key = f"{user_id}:{account_name}"
 
-        # PATCHED: Cancel the worker if it's running
         if worker_key in self.active_workers:
             self.active_workers[worker_key].cancel()
-            # The task will remove itself from the dict in its `finally` block,
-            # but we can remove it here to update the UI faster.
-            del self.active_workers[worker_key]
             LOGGER.info(f"Worker cancelled for {worker_key} due to account deletion.")
         
-        # Delete the session file
         if self._delete_session_file(user_id, account_name):
             await event.reply(f"✅ حساب `{account_name}` با موفقیت حذف شد و عملیات مرتبط متوقف گردید.")
         else:
-            # This can happen if the file was already deleted but a worker was somehow active.
             await event.reply(f"✅ عملیات برای حساب `{account_name}` متوقف شد (نشست از قبل وجود نداشت).")
         
-        await self._manage_accounts_handler(event) # Refresh the menu
+        await self._manage_accounts_handler(event)
 
-    # --- Login Flow Handlers ---
+    # --- Login Flow Handlers (omitted for brevity, no changes from previous version) ---
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
         self.login_sessions[user_id]['phone'] = event.text.strip()
@@ -320,7 +379,7 @@ class GroupCreatorBot:
         except Exception as e:
             LOGGER.error(f"Phone input error for {user_id}", exc_info=e)
             del self.login_sessions[user_id]
-            await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد.', buttons=MAIN_MENU_KEYBOARD)
+            await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد.', buttons=self._build_main_menu())
 
     async def _handle_code_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
@@ -335,7 +394,7 @@ class GroupCreatorBot:
         except Exception as e:
             LOGGER.error(f"Code input error for {user_id}", exc_info=e)
             del self.login_sessions[user_id]
-            await event.reply('❌ **خطا:** کد وارد شده نامعتبر است یا مشکلی رخ داده.', buttons=MAIN_MENU_KEYBOARD)
+            await event.reply('❌ **خطا:** کد وارد شده نامعتبر است یا مشکلی رخ داده.', buttons=self._build_main_menu())
 
     async def _handle_password_input(self, event: events.NewMessage.Event) -> None:
         user_id = event.sender_id
@@ -346,7 +405,7 @@ class GroupCreatorBot:
         except Exception as e:
             LOGGER.error(f"Password input error for {user_id}", exc_info=e)
             del self.login_sessions[user_id]
-            await event.reply('❌ **خطا:** رمز عبور اشتباه است یا مشکلی رخ داده.', buttons=MAIN_MENU_KEYBOARD)
+            await event.reply('❌ **خطا:** رمز عبور اشتباه است یا مشکلی رخ داده.', buttons=self._build_main_menu())
 
     async def _handle_account_name_input(self, event: events.NewMessage.Event) -> None:
         """Final step of login: gets the account nickname and saves the session."""
@@ -356,8 +415,7 @@ class GroupCreatorBot:
             await event.reply("❌ نام مستعار نمی‌تواند خالی باشد. لطفا یک نام وارد کنید.")
             return
         
-        existing_accounts = self._get_user_accounts(user_id)
-        if account_name in existing_accounts:
+        if account_name in self._get_user_accounts(user_id):
             await event.reply(f"❌ شما قبلا حسابی با نام `{account_name}` اضافه کرده‌اید. لطفا یک نام دیگر انتخاب کنید.")
             return
             
