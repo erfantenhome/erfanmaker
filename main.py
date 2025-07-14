@@ -152,10 +152,22 @@ class GroupCreatorBot:
                 for i in range(50):
                     group_title = f"{account_name} Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
+                        # ADDED: Immediate feedback for each attempt
+                        await self.bot.send_message(user_id, f"⏳ [{account_name}] تلاش برای ساخت گروه #{i + 1}...")
+                        
                         await user_client(CreateChatRequest(users=['@BotFather'], title=group_title))
+                        
+                        # ADDED: Immediate success feedback
+                        await self.bot.send_message(user_id, f"✅ [{account_name}] گروه #{i + 1} با موفقیت ساخته شد.")
+
                         if (i + 1) % 10 == 0:
-                            await self.bot.send_message(user_id, f"⏳ [{account_name}] پیشرفت: {i + 1}/50 گروه ساخته شد.")
-                        await asyncio.sleep(random.randint(400, 800))
+                            await self.bot.send_message(user_id, f"📊 [{account_name}] پیشرفت کلی: {i + 1}/50 گروه ساخته شد.")
+                        
+                        # CHANGED: Drastically reduced sleep time for testing
+                        sleep_duration = random.randint(5, 10)
+                        await self.bot.send_message(user_id, f"⏱️ [{account_name}] انتظار برای {sleep_duration} ثانیه...")
+                        await asyncio.sleep(sleep_duration)
+
                     except errors.FloodWaitError as fwe:
                         resume_time = datetime.now() + timedelta(seconds=fwe.seconds)
                         await self.bot.send_message(user_id, f"⏳ [{account_name}] به دلیل محدودیت تلگرام، عملیات به مدت {fwe.seconds / 60:.1f} دقیقه تا ساعت {resume_time:%H:%M:%S} متوقف شد.")
