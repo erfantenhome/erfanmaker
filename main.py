@@ -36,9 +36,15 @@ user_sessions = {}
 def create_new_user_client():
     """Creates a Telethon client with randomized device info."""
     session = StringSession()
+    # Expanded list of device parameters
     device_params = [
         {'device_model': 'iPhone 14 Pro Max', 'system_version': '17.5.1', 'app_version': '10.9.1'},
-        {'device_model': 'Samsung Galaxy S24 Ultra', 'system_version': 'SDK 34', 'app_version': '10.9.1'}
+        {'device_model': 'Samsung Galaxy S24 Ultra', 'system_version': 'SDK 34', 'app_version': '10.9.1'},
+        {'device_model': 'Desktop', 'system_version': 'Windows 11', 'app_version': '4.16.8'},
+        {'device_model': 'Pixel 8 Pro', 'system_version': 'SDK 34', 'app_version': '10.9.0'},
+        {'device_model': 'iPhone 13', 'system_version': '17.1.1', 'app_version': '10.5.0'},
+        {'device_model': 'Samsung Galaxy A54', 'system_version': 'SDK 33', 'app_version': '10.8.0'},
+        {'device_model': 'MacBook Pro', 'system_version': 'macOS 14.5', 'app_version': '10.9.1'},
     ]
     selected_device = random.choice(device_params)
     return TelegramClient(session, API_ID, API_HASH, **selected_device)
@@ -58,13 +64,10 @@ async def run_group_creation_worker(event, logged_in_client, main_bot_client):
                 sleep_duration = random.randint(400, 1000)
                 logging.info(f"Waiting for {sleep_duration} seconds...")
                 await asyncio.sleep(sleep_duration)
-            
-            # --- NEW: Specific handler for when the user is restricted ---
             except errors.UserRestrictedError:
                 logging.error(f"User {user_id} is restricted from creating groups.")
                 await main_bot_client.send_message(user_id, '❌ **خطا:** حساب شما به دلیل ریپورت اسپم توسط تلگرام محدود شده و نمی‌تواند گروه بسازد.')
-                break  # Stop the loop for this user
-
+                break
             except errors.FloodWaitError as fwe:
                 logging.warning(f"Flood wait for user {user_id}. Sleeping for {fwe.seconds} seconds.")
                 await main_bot_client.send_message(user_id, f"⏳ به دلیل محدودیت تلگرام، عملیات به مدت {fwe.seconds / 60:.2f} دقیقه متوقف شد.")
@@ -82,12 +85,10 @@ async def on_login_success(event, logged_in_client, main_bot_client):
     user_id = event.sender_id
     if user_id in user_sessions:
         del user_sessions[user_id]
-    # Pass both the main bot client and the user's client to the worker
     asyncio.create_task(run_group_creation_worker(event, logged_in_client, main_bot_client))
 
 # --- Main Application Logic ---
 async def main():
-    # This is the main bot client
     bot = TelegramClient('bot_session', API_ID, API_HASH)
 
     @bot.on(events.NewMessage(pattern='/start'))
@@ -108,8 +109,8 @@ async def main():
         state = user_sessions[user_id].get('state')
         
         if state == 'awaiting_phone': await handle_phone_input(event)
-        elif state == 'awaiting_code': await handle_code_input(event, bot) # Pass bot client
-        elif state == 'awaiting_password': await handle_password_input(event, bot) # Pass bot client
+        elif state == 'awaiting_code': await handle_code_input(event, bot)
+        elif state == 'awaiting_password': await handle_password_input(event, bot)
 
     async def handle_phone_input(event):
         user_id = event.sender_id
