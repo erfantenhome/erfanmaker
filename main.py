@@ -147,27 +147,33 @@ class GroupCreatorBot:
         try:
             async with self.worker_semaphore:
                 LOGGER.info(f"Worker started for {worker_key}. Semaphore acquired.")
-                await self.bot.send_message(user_id, f"✅ **عملیات برای حساب `{account_name}` آغاز شد!**")
+                
+                # CHANGED: Increased sleep time for production use
+                min_sleep, max_sleep = 300, 600
+                avg_sleep_per_group = (min_sleep + max_sleep) / 2
+                estimated_total_minutes = (50 * avg_sleep_per_group) / 60
+                
+                # ADDED: Initial time estimate message
+                await self.bot.send_message(user_id, f"✅ **عملیات برای حساب `{account_name}` آغاز شد!**\n\n⏳ تخمین زمان کل عملیات: حدود {estimated_total_minutes:.0f} دقیقه.")
 
                 for i in range(50):
                     group_title = f"{account_name} Group #{random.randint(1000, 9999)} - {i + 1}"
                     try:
-                        # ADDED: Immediate feedback for each attempt
-                        await self.bot.send_message(user_id, f"⏳ [{account_name}] تلاش برای ساخت گروه #{i + 1}...")
-                        
                         await user_client(CreateChatRequest(users=['@BotFather'], title=group_title))
                         
-                        # ADDED: Immediate success feedback
-                        await self.bot.send_message(user_id, f"✅ [{account_name}] گروه #{i + 1} با موفقیت ساخته شد.")
-
-                        if (i + 1) % 10 == 0:
-                            await self.bot.send_message(user_id, f"📊 [{account_name}] پیشرفت کلی: {i + 1}/50 گروه ساخته شد.")
+                        # ADDED: Progress and time remaining message
+                        groups_made = i + 1
+                        groups_remaining = 50 - groups_made
+                        time_remaining_minutes = (groups_remaining * avg_sleep_per_group) / 60
+                        await self.bot.send_message(user_id, f"📊 [{account_name}] {groups_made}/50 گروه ساخته شد. زمان تقریبی باقی‌مانده: {time_remaining_minutes:.0f} دقیقه.")
                         
-                        # CHANGED: Drastically reduced sleep time for testing
-                        sleep_duration = random.randint(5, 10)
-                        await self.bot.send_message(user_id, f"⏱️ [{account_name}] انتظار برای {sleep_duration} ثانیه...")
-                        await asyncio.sleep(sleep_duration)
+                        await asyncio.sleep(random.randint(min_sleep, max_sleep))
 
+                    # ADDED: Better error handling for restricted users
+                    except errors.UserRestrictedError:
+                        LOGGER.error(f"Worker for {worker_key} failed: User is restricted.")
+                        await self.bot.send_message(user_id, f"❌ حساب `{account_name}` توسط تلگرام محدود شده و قادر به ساخت گروه نیست. عملیات متوقف شد.")
+                        break
                     except errors.FloodWaitError as fwe:
                         resume_time = datetime.now() + timedelta(seconds=fwe.seconds)
                         await self.bot.send_message(user_id, f"⏳ [{account_name}] به دلیل محدودیت تلگرام، عملیات به مدت {fwe.seconds / 60:.1f} دقیقه تا ساعت {resume_time:%H:%M:%S} متوقف شد.")
@@ -278,13 +284,26 @@ class GroupCreatorBot:
             await event.reply(f'❌ خطایی در اتصال به حساب `{account_name}` رخ داد.')
 
     async def _delete_account_handler(self, event: events.NewMessage.Event, account_name: str) -> None:
-        """Deletes a specific account for the user."""
+        """Deletes a specific account and cancels its running worker, if any."""
         user_id = event.sender_id
+        worker_key = f"{user_id}:{account_name}"
+
+        # PATCHED: Cancel the worker if it's running
+        if worker_key in self.active_workers:
+            self.active_workers[worker_key].cancel()
+            # The task will remove itself from the dict in its `finally` block,
+            # but we can remove it here to update the UI faster.
+            del self.active_workers[worker_key]
+            LOGGER.info(f"Worker cancelled for {worker_key} due to account deletion.")
+        
+        # Delete the session file
         if self._delete_session_file(user_id, account_name):
-            await event.reply(f"✅ حساب `{account_name}` با موفقیت حذف شد.")
-            await self._manage_accounts_handler(event) # Refresh the menu
+            await event.reply(f"✅ حساب `{account_name}` با موفقیت حذف شد و عملیات مرتبط متوقف گردید.")
         else:
-            await event.reply("❌ خطایی در حذف حساب رخ داد.")
+            # This can happen if the file was already deleted but a worker was somehow active.
+            await event.reply(f"✅ عملیات برای حساب `{account_name}` متوقف شد (نشست از قبل وجود نداشت).")
+        
+        await self._manage_accounts_handler(event) # Refresh the menu
 
     # --- Login Flow Handlers ---
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
