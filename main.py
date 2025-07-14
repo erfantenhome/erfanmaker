@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import random
@@ -6,6 +7,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from dotenv import load_dotenv
 # Use the high-level Button helper
 from telethon import Button, TelegramClient, errors, events
@@ -29,9 +33,11 @@ load_dotenv()
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# NEW: Key for encrypting session files at rest
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
-if not all([API_ID, API_HASH, BOT_TOKEN]):
-    raise ValueError("Missing required environment variables in your .env file.")
+if not all([API_ID, API_HASH, BOT_TOKEN, ENCRYPTION_KEY]):
+    raise ValueError("Missing required environment variables. Ensure API_ID, API_HASH, BOT_TOKEN, and ENCRYPTION_KEY are set.")
 
 API_ID = int(API_ID)
 SESSIONS_DIR = Path("sessions")
@@ -43,36 +49,67 @@ BTN_START_PROCESS = "🚀 شروع ساخت گروه"
 BTN_CANCEL = "❌ لغو عملیات"
 BTN_HELP = "ℹ️ راهنما"
 
-# --- CORRECTED KEYBOARD DEFINITION USING Button HELPER ---
 MAIN_MENU_KEYBOARD = [
     [Button.text(BTN_START_PROCESS)],
     [Button.text(BTN_CANCEL), Button.text(BTN_HELP)],
 ]
 
+
 class GroupCreatorBot:
     """A class to encapsulate the bot's logic, state, and handlers."""
 
     def __init__(self) -> None:
-        """Initializes the bot instance."""
+        """Initializes the bot instance and the encryption engine."""
         self.bot = TelegramClient('bot_session', API_ID, API_HASH)
         self.login_sessions: Dict[int, Dict[str, Any]] = {}
         self.active_workers: Dict[int, asyncio.Task] = {}
         self.worker_semaphore = asyncio.Semaphore(MAX_CONCURRENT_WORKERS)
 
-    # --- Helper Functions ---
+        # Initialize encryption engine
+        try:
+            self.fernet = Fernet(ENCRYPTION_KEY.encode())
+        except (ValueError, TypeError):
+            raise ValueError("Invalid ENCRYPTION_KEY. Please generate a valid key.")
+
+    # --- Encryption Helpers ---
+
+    def _encrypt_data(self, data: str) -> bytes:
+        """Encrypts a string."""
+        return self.fernet.encrypt(data.encode())
+
+    def _decrypt_data(self, encrypted_data: bytes) -> Optional[str]:
+        """Decrypts bytes back into a string."""
+        try:
+            return self.fernet.decrypt(encrypted_data).decode()
+        except InvalidToken:
+            LOGGER.error("Failed to decrypt session data. The key may have changed or the data is corrupt.")
+            return None
+
+    # --- Session Helpers ---
+
     def _get_session_path(self, user_id: int) -> Path:
         return SESSIONS_DIR / f"user_{user_id}.session"
 
     def _save_session_string(self, user_id: int, session_string: str) -> None:
+        """Encrypts and saves a user's session string to a file."""
+        encrypted_session = self._encrypt_data(session_string)
         session_file = self._get_session_path(user_id)
-        session_file.write_text(session_string)
-        LOGGER.info(f"Session saved for user {user_id}.")
+        session_file.write_bytes(encrypted_session)
+        LOGGER.info(f"Encrypted session saved for user {user_id}.")
 
     def _load_session_string(self, user_id: int) -> Optional[str]:
+        """Loads and decrypts a user's session string from a file."""
         session_file = self._get_session_path(user_id)
-        if session_file.exists():
-            return session_file.read_text().strip()
-        return None
+        if not session_file.exists():
+            return None
+
+        encrypted_session = session_file.read_bytes()
+        if not encrypted_session:
+            return None
+
+        return self._decrypt_data(encrypted_session)
+
+    # --- Core Bot Logic (Unchanged from previous version) ---
 
     def _delete_session_file(self, user_id: int) -> None:
         try:
@@ -90,7 +127,6 @@ class GroupCreatorBot:
         ]
         return TelegramClient(session, API_ID, API_HASH, **random.choice(device_params))
 
-    # --- Main Worker Task ---
     async def run_group_creation_worker(self, event: events.NewMessage.Event, user_client: TelegramClient) -> None:
         user_id = event.sender_id
         try:
@@ -145,7 +181,6 @@ class GroupCreatorBot:
         task = asyncio.create_task(self.run_group_creation_worker(event, user_client))
         self.active_workers[user_id] = task
 
-    # --- Bot Event Handlers ---
     async def _start_handler(self, event: events.NewMessage.Event) -> None:
         await event.reply(
             '**🤖 به ربات سازنده گروه خوش آمدید!**\n\n'
@@ -182,7 +217,7 @@ class GroupCreatorBot:
 
         saved_session = self._load_session_string(user_id)
         if saved_session:
-            await event.reply('🔄 در حال ورود با نشست ذخیره شده...')
+            await event.reply('🔄 در حال ورود با نشست امن ذخیره شده...')
             user_client = self._create_new_user_client(saved_session)
             try:
                 await user_client.connect()
@@ -246,7 +281,8 @@ class GroupCreatorBot:
             self.login_sessions[user_id]['state'] = 'awaiting_code'
         except (errors.PhoneNumberInvalidError, Exception) as e:
             LOGGER.error(f"Phone input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
+            if user_id in self.login_sessions:
+                del self.login_sessions[user_id]
             await event.reply('❌ **خطا:** شماره تلفن نامعتبر است یا مشکلی در ارسال کد رخ داد.')
 
     async def _handle_code_input(self, event: events.NewMessage.Event) -> None:
@@ -272,7 +308,8 @@ class GroupCreatorBot:
             del self.login_sessions[user_id]
         except Exception as e:
             LOGGER.error(f"Code input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
+            if user_id in self.login_sessions:
+                del self.login_sessions[user_id]
             await event.reply('❌ **خطا:** یک مشکل داخلی رخ داده است.')
 
     async def _handle_password_input(self, event: events.NewMessage.Event) -> None:
@@ -285,7 +322,8 @@ class GroupCreatorBot:
             await event.reply('❌ **خطا:** رمز عبور اشتباه است. لطفا دوباره تلاش کنید.')
         except Exception as e:
             LOGGER.error(f"Password input error for {user_id}", exc_info=e)
-            del self.login_sessions[user_id]
+            if user_id in self.login_sessions:
+                del self.login_sessions[user_id]
             await event.reply('❌ **خطا:** یک مشکل داخلی رخ داده است.')
 
     def register_handlers(self) -> None:
