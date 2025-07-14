@@ -132,7 +132,6 @@ class GroupCreatorBot:
             for acc_name in accounts:
                 worker_key = f"{user_id}:{acc_name}"
                 status_icon = "⏳" if worker_key in self.active_workers else "🟢"
-                # CORRECTED: Removed the invalid 'data' argument. The full text is the command.
                 keyboard.append([
                     Button.text(f"{status_icon} شروع برای {acc_name}"),
                     Button.text(f"🗑️ حذف {acc_name}")
@@ -218,7 +217,7 @@ class GroupCreatorBot:
             await route_map[text](event)
             return
 
-        # CORRECTED: Regex-based routing for dynamic buttons
+        # Regex-based routing for dynamic buttons
         start_match = re.match(r".* شروع برای (.*)", text)
         if start_match:
             acc_name = start_match.group(1)
@@ -244,15 +243,15 @@ class GroupCreatorBot:
         worker_key = f"{user_id}:{account_name}"
 
         if worker_key in self.active_workers:
-            await event.answer('⏳ عملیات برای این حساب در حال اجراست.')
+            await event.reply('⏳ عملیات برای این حساب در حال اجراست.')
             return
 
         session_str = self._load_session_string(user_id, account_name)
         if not session_str:
-            await event.answer('❌ نشست برای این حساب یافت نشد. لطفا آن را حذف و دوباره اضافه کنید.')
+            await event.reply('❌ نشست برای این حساب یافت نشد. لطفا آن را حذف و دوباره اضافه کنید.')
             return
 
-        await event.answer(f'🚀 در حال آماده‌سازی برای شروع عملیات حساب `{account_name}`...')
+        await event.reply(f'🚀 در حال آماده‌سازی برای شروع عملیات حساب `{account_name}`...')
         user_client = self._create_new_user_client(session_str)
         try:
             await user_client.connect()
@@ -270,8 +269,6 @@ class GroupCreatorBot:
         """Deletes a specific account for the user."""
         user_id = event.sender_id
         if self._delete_session_file(user_id, account_name):
-            # Using .edit() might be better here if the original message is known,
-            # but .reply() is safer.
             await event.reply(f"✅ حساب `{account_name}` با موفقیت حذف شد.")
             await self._manage_accounts_handler(event) # Refresh the menu
         else:
