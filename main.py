@@ -74,23 +74,15 @@ async def run_group_creation_worker(event, client):
 async def on_login_success(event, client):
     """Handles the common logic after a successful login."""
     user_id = event.sender_id
-    # For a real app, this is where you would encrypt and save the session string to your database
-    # session_string = client.session.save()
-    # db.save_session(user_id, encrypted_session(session_string))
-    
-    # Clean up the temporary session data
+    # In a real app, you would save the encrypted session string to your database here
     if user_id in user_sessions:
         del user_sessions[user_id]
-        
-    # Start the group creation task in the background
     asyncio.create_task(run_group_creation_worker(event, client))
-
 
 # --- Main Application Logic ---
 async def main():
     client = TelegramClient('bot_session', API_ID, API_HASH)
 
-    # --- Define Event Handlers within main ---
     @client.on(events.NewMessage(pattern='/start'))
     async def start(event):
         user_id = event.sender_id
@@ -118,11 +110,12 @@ async def main():
 
     async def handle_phone_input(event):
         user_id = event.sender_id
-        phone = event.text.strip()
         user_client = create_new_user_client()
         user_sessions[user_id]['client'] = user_client
         try:
             await user_client.connect()
+            # Pass the phone number from the previous step
+            phone = user_sessions[user_id].get('phone', event.text.strip())
             sent_code = await user_client.send_code_request(phone)
             user_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
             await event.reply('یک کد ورود به حساب تلگرام شما ارسال شد. لطفا آن را اینجا ارسال کنید.')
@@ -140,11 +133,16 @@ async def main():
         user_client = user_sessions[user_id]['client']
         phone_code_hash = user_sessions[user_id].get('phone_code_hash')
         try:
-            await user_client.sign_in(event.text.strip(), phone_code_hash=phone_code_hash)
+            # The phone number is not available in this event, so we sign in differently
+            # We don't need to pass the phone number again to sign_in
+            await user_client.sign_in(code=event.text.strip(), phone_code_hash=phone_code_hash)
             await on_login_success(event, user_client)
         except errors.SessionPasswordNeededError:
             await event.reply('حساب شما دارای تایید دو مرحله‌ای است. لطفا رمز عبور خود را ارسال کنید.')
             user_sessions[user_id]['state'] = 'awaiting_password'
+        except errors.PhoneNumberBannedError: # This is the new, specific error handler
+            await event.reply('❌ **خطا:** این شماره تلفن توسط تلگرام مسدود شده و قابل استفاده نیست.')
+            del user_sessions[user_id]
         except errors.PhoneCodeInvalidError:
             await event.reply('❌ **خطا:** کد وارد شده نامعتبر است.')
         except errors.PhoneCodeExpiredError:
