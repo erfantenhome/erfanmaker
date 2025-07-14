@@ -11,8 +11,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from telethon import Button, TelegramClient, errors, events
 from telethon.sessions import StringSession
-# ADDED: Imports for supergroup migration and permissions
-from telethon.tl.functions.channels import EditChatDefaultBannedRightsRequest, MigrateChatRequest
+# CORRECTED: Fixed the import name
+from telethon.tl.functions.channels import EditDefaultBannedRightsRequest, MigrateChatRequest
 from telethon.tl.functions.messages import CreateChatRequest, ExportChatInviteRequest
 from telethon.tl.types import ChatBannedRights, Message
 
@@ -209,7 +209,8 @@ class GroupCreatorBot:
                                 raise ValueError("Could not find new supergroup after migration.")
                             
                             # 2b. Set history visible for new members
-                            await user_client(EditChatDefaultBannedRightsRequest(
+                            # CORRECTED: Fixed the function name
+                            await user_client(EditDefaultBannedRightsRequest(
                                 peer=new_channel,
                                 banned_rights=ChatBannedRights(
                                     until_date=None,
