@@ -1,7 +1,6 @@
 import asyncio
 import os
 import random
-import time
 import logging
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
@@ -36,7 +35,6 @@ user_sessions = {}
 def create_new_user_client():
     """Creates a Telethon client with randomized device info."""
     session = StringSession()
-    # Expanded list of device parameters
     device_params = [
         {'device_model': 'iPhone 14 Pro Max', 'system_version': '17.5.1', 'app_version': '10.9.1'},
         {'device_model': 'Samsung Galaxy S24 Ultra', 'system_version': 'SDK 34', 'app_version': '10.9.1'},
@@ -61,6 +59,11 @@ async def run_group_creation_worker(event, logged_in_client, main_bot_client):
             try:
                 await logged_in_client(CreateChatRequest(users=[user_to_add], title=group_title))
                 logging.info(f"Successfully created group: {group_title} for user {user_id}")
+                
+                # --- NEW: Progress update every 10 groups ---
+                if (i + 1) % 10 == 0:
+                    await main_bot_client.send_message(user_id, f"⏳ پیشرفت: {i + 1} گروه از ۵۰ گروه ساخته شد...")
+
                 sleep_duration = random.randint(400, 1000)
                 logging.info(f"Waiting for {sleep_duration} seconds...")
                 await asyncio.sleep(sleep_duration)
@@ -74,7 +77,7 @@ async def run_group_creation_worker(event, logged_in_client, main_bot_client):
                 await asyncio.sleep(fwe.seconds)
             except Exception as e:
                 logging.error(f"Could not create group {group_title} for user {user_id}", exc_info=True)
-                await main_bot_client.send_message(user_id, f"❌ ساخت گروه به دلیل خطا ناموفق بود: {e}")
+                await main_bot_client.send_message(user_id, f"❌ خطای غیرمنتظره در هنگام ساخت گروه رخ داد.")
                 await asyncio.sleep(60)
     finally:
         await main_bot_client.send_message(user_id, '🏁 چرخه ساخت گروه‌ها به پایان رسید.')
@@ -93,6 +96,7 @@ async def main():
 
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
+        """Handles the initial /start command from a user."""
         user_id = event.sender_id
         await event.reply(
             '**خوش آمدید!**\n'
@@ -104,6 +108,7 @@ async def main():
 
     @bot.on(events.NewMessage)
     async def handle_all_messages(event):
+        """Routes incoming messages to the correct handler based on user state."""
         user_id = event.sender_id
         if user_id not in user_sessions: return
         state = user_sessions[user_id].get('state')
@@ -113,6 +118,7 @@ async def main():
         elif state == 'awaiting_password': await handle_password_input(event, bot)
 
     async def handle_phone_input(event):
+        """Handles the user's phone number submission."""
         user_id = event.sender_id
         user_sessions[user_id]['phone'] = event.text.strip()
         user_client = create_new_user_client()
@@ -132,6 +138,7 @@ async def main():
             del user_sessions[user_id]
 
     async def handle_code_input(event, main_bot_client):
+        """Handles the user's login code submission."""
         user_id = event.sender_id
         user_client = user_sessions[user_id]['client']
         phone_code_hash = user_sessions[user_id].get('phone_code_hash')
@@ -155,6 +162,7 @@ async def main():
             del user_sessions[user_id]
 
     async def handle_password_input(event, main_bot_client):
+        """Handles the user's 2FA password submission."""
         user_id = event.sender_id
         user_client = user_sessions[user_id]['client']
         try:
