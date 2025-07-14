@@ -51,11 +51,6 @@ MAIN_MENU_KEYBOARD = [
     [Button.text(BTN_HELP)],
 ]
 
-# --- Action Prefixes for Dynamic Buttons ---
-ACTION_START_PREFIX = "start_acc:"
-ACTION_DELETE_PREFIX = "delete_acc:"
-
-
 class GroupCreatorBot:
     """A class to encapsulate the bot's logic for managing multiple accounts."""
 
@@ -90,7 +85,6 @@ class GroupCreatorBot:
         """Scans the session directory and returns a list of account names for a user."""
         accounts = []
         for f in SESSIONS_DIR.glob(f"user_{user_id}__*.session"):
-            # Extract account name from filename: user_{user_id}__{account_name}.session
             match = re.search(f"user_{user_id}__(.*)\\.session", f.name)
             if match:
                 accounts.append(match.group(1))
@@ -138,9 +132,10 @@ class GroupCreatorBot:
             for acc_name in accounts:
                 worker_key = f"{user_id}:{acc_name}"
                 status_icon = "⏳" if worker_key in self.active_workers else "🟢"
+                # CORRECTED: Removed the invalid 'data' argument. The full text is the command.
                 keyboard.append([
-                    Button.text(f"{status_icon} شروع برای {acc_name}", data=f"{ACTION_START_PREFIX}{acc_name}"),
-                    Button.text(f"🗑️ حذف {acc_name}", data=f"{ACTION_DELETE_PREFIX}{acc_name}")
+                    Button.text(f"{status_icon} شروع برای {acc_name}"),
+                    Button.text(f"🗑️ حذف {acc_name}")
                 ])
         
         keyboard.append([Button.text(BTN_ADD_ACCOUNT)])
@@ -223,13 +218,16 @@ class GroupCreatorBot:
             await route_map[text](event)
             return
 
-        # Dynamic button routing (for start/delete actions)
-        if text.startswith(ACTION_START_PREFIX):
-            acc_name = text[len(ACTION_START_PREFIX):]
+        # CORRECTED: Regex-based routing for dynamic buttons
+        start_match = re.match(r".* شروع برای (.*)", text)
+        if start_match:
+            acc_name = start_match.group(1)
             await self._start_process_handler(event, acc_name)
             return
-        if text.startswith(ACTION_DELETE_PREFIX):
-            acc_name = text[len(ACTION_DELETE_PREFIX):]
+
+        delete_match = re.match(r".* حذف (.*)", text)
+        if delete_match:
+            acc_name = delete_match.group(1)
             await self._delete_account_handler(event, acc_name)
             return
 
@@ -272,10 +270,12 @@ class GroupCreatorBot:
         """Deletes a specific account for the user."""
         user_id = event.sender_id
         if self._delete_session_file(user_id, account_name):
-            await event.answer(f"✅ حساب `{account_name}` با موفقیت حذف شد.")
+            # Using .edit() might be better here if the original message is known,
+            # but .reply() is safer.
+            await event.reply(f"✅ حساب `{account_name}` با موفقیت حذف شد.")
             await self._manage_accounts_handler(event) # Refresh the menu
         else:
-            await event.answer("❌ خطایی در حذف حساب رخ داد.")
+            await event.reply("❌ خطایی در حذف حساب رخ داد.")
 
     # --- Login Flow Handlers ---
     async def _handle_phone_input(self, event: events.NewMessage.Event) -> None:
