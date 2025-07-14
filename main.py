@@ -23,7 +23,7 @@ API_ID = int(API_ID)
 # In-memory dictionary to manage login states
 user_sessions = {}
 
-# --- Helper Functions (moved outside main for clarity) ---
+# --- Helper Functions ---
 def create_new_user_client():
     """Creates a Telethon client with randomized device info."""
     session = StringSession()
@@ -38,7 +38,7 @@ def create_new_user_client():
 
 async def run_group_creation_worker(event, client):
     """The main background task that creates 50 groups for the logged-in user."""
-    await event.reply('✅ **Login successful!**\n\nI will now start creating 50 groups in the background. This will take several hours.')
+    await event.reply('✅ **ورود موفقیت‌آمیز بود!**\n\nفرآیند ساخت ۵۰ گروه در پس‌زمینه آغاز شد. این کار ممکن است چندین ساعت طول بکشد.')
     if event.sender_id in user_sessions:
         del user_sessions[event.sender_id]
     try:
@@ -53,14 +53,14 @@ async def run_group_creation_worker(event, client):
                 await asyncio.sleep(sleep_duration)
             except errors.FloodWaitError as fwe:
                 print(f"Flood wait requested. Sleeping for {fwe.seconds} seconds.")
-                await event.sender.send_message(f"⏳ Paused by Telegram. Resuming in {fwe.seconds / 60:.2f} minutes.")
+                await event.sender.send_message(f"⏳ به دلیل محدودیت تلگرام، عملیات به مدت {fwe.seconds / 60:.2f} دقیقه متوقف شد.")
                 await asyncio.sleep(fwe.seconds)
             except Exception as e:
                 print(f"Could not create group {group_title}. Error: {e}")
-                await event.sender.send_message(f"❌ Failed to create a group due to error: {e}")
+                await event.sender.send_message(f"❌ ساخت گروه به دلیل خطا ناموفق بود: {e}")
                 await asyncio.sleep(60)
     finally:
-        await event.sender.send_message('🏁 Group creation cycle finished.')
+        await event.sender.send_message('🏁 چرخه ساخت گروه‌ها به پایان رسید.')
         await client.disconnect()
 
 # --- Main Application Logic ---
@@ -72,8 +72,13 @@ async def main():
     @client.on(events.NewMessage(pattern='/start'))
     async def start(event):
         user_id = event.sender_id
-        await event.reply('**Welcome!**\nThis bot helps automate group creation.\n\n⚠️ **Warning:** Using this service is against Telegram\'s rules and will likely get your account banned.\n\nPlease send your Telegram phone number in international format (e.g., `+15551234567`) to continue.')
+        await event.reply(
+            '**خوش آمدید!**\n'
+            'این ربات برای ساخت گروه به صورت اتوماتیک است.\n\n'
+            'لطفا شماره تلفن تلگرام خود را با فرمت بین‌المللی ارسال کنید (مثال: +989123456789).'
+        )
         user_sessions[user_id] = {'state': 'awaiting_phone'}
+        raise events.StopPropagation
 
     @client.on(events.NewMessage)
     async def handle_all_messages(event):
@@ -100,10 +105,10 @@ async def main():
             await user_client.connect()
             sent_code = await user_client.send_code_request(phone)
             user_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
-            await event.reply('A login code was sent to your Telegram account. Please send it here.')
+            await event.reply('یک کد ورود به حساب تلگرام شما ارسال شد. لطفا آن را اینجا ارسال کنید.')
             user_sessions[user_id]['state'] = 'awaiting_code'
         except Exception as e:
-            await event.reply(f'❌ **Error:** {e}')
+            await event.reply(f'❌ **خطا:** {e}')
             del user_sessions[user_id]
 
     async def handle_code_input(event):
@@ -116,10 +121,10 @@ async def main():
             await user_client.sign_in(phone, code, phone_code_hash=phone_code_hash)
             asyncio.create_task(run_group_creation_worker(event, user_client))
         except errors.SessionPasswordNeededError:
-            await event.reply('Your account has Two-Factor Authentication enabled. Please send me your password.')
+            await event.reply('حساب شما دارای تایید دو مرحله‌ای است. لطفا رمز عبور خود را ارسال کنید.')
             user_sessions[user_id]['state'] = 'awaiting_password'
         except Exception as e:
-            await event.reply(f'❌ **Error:** {e}')
+            await event.reply(f'❌ **خطا:** {e}')
             del user_sessions[user_id]
 
     async def handle_password_input(event):
@@ -130,7 +135,7 @@ async def main():
             await user_client.sign_in(password=password)
             asyncio.create_task(run_group_creation_worker(event, user_client))
         except Exception as e:
-            await event.reply(f'❌ **Error:** {e}')
+            await event.reply(f'❌ **خطا:** {e}')
             del user_sessions[user_id]
 
     # --- Start the Bot ---
