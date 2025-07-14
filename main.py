@@ -2,153 +2,146 @@ import asyncio
 import os
 import random
 import time
-from telethon.sync import TelegramClient, events
+from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import CreateChatRequest
+from dotenv import load_dotenv
 
-# --- Configuration (Load from Environment Variables on Render) ---
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Load variables from the .env file into the environment
+load_dotenv()
 
-# In-memory dictionary to store user's state during the login process.
-# For a real-world app, you should use a database (e.g., Redis, PostgreSQL) for this.
+# --- Configuration ---
+# Now reads the variables loaded from your .env file
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# This check ensures the app doesn't start without its configuration
+if not all([API_ID, API_HASH, BOT_TOKEN]):
+    raise ValueError("Missing one or more required environment variables in your .env file.")
+
+# Convert API_ID to integer
+API_ID = int(API_ID)
+
+# In-memory dictionary to manage login states
 user_sessions = {}
 
+# --- The rest of the bot code is the same as before... ---
+
 # --- 1. The Controller Bot Logic ---
-bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    await event.reply('Welcome! I can help you automate group creation.\n\nPlease send me your Telegram phone number in international format (e.g., +15551234567).')
-
-    # Store the state that we are waiting for a phone number
+    """Handles the /start command and begins the login process."""
     user_id = event.sender_id
+    await event.reply('**Welcome!**\nThis bot helps automate group creation.\n\n⚠️ **Warning:** Using this service is against Telegram\'s rules and will likely get your account banned.\n\nPlease send your Telegram phone number in international format (e.g., `+15551234567`) to continue.')
     user_sessions[user_id] = {'state': 'awaiting_phone'}
 
 @bot.on(events.NewMessage)
-async def handle_messages(event):
+async def handle_all_messages(event):
+    """Main message handler that routes messages based on user state."""
     user_id = event.sender_id
     if user_id not in user_sessions:
-        return # Ignore messages from users not in a login flow
-
+        return
     state = user_sessions[user_id].get('state')
-
-    # Using a simple state machine to manage the conversation
     if state == 'awaiting_phone':
-        await handle_phone(event)
+        await handle_phone_input(event)
     elif state == 'awaiting_code':
-        await handle_code(event)
+        await handle_code_input(event)
     elif state == 'awaiting_password':
-        await handle_password(event)
+        await handle_password_input(event)
 
-async def handle_phone(event):
+async def handle_phone_input(event):
+    """Handles the user's phone number submission."""
     user_id = event.sender_id
     phone = event.text.strip()
-
     user_sessions[user_id]['phone'] = phone
-
-    # Create a new client for this user with randomized device info
-    client = create_new_client(user_id)
-
+    client = create_new_user_client()
+    user_sessions[user_id]['client'] = client
     try:
-        # Connect and send the login code
         await client.connect()
         sent_code = await client.send_code_request(phone)
         user_sessions[user_id]['phone_code_hash'] = sent_code.phone_code_hash
-        user_sessions[user_id]['client'] = client # Store the client instance
-
-        await event.reply('A login code has been sent to your Telegram account. Please send it to me.')
+        await event.reply('A login code was sent to your Telegram account. Please send it here.')
         user_sessions[user_id]['state'] = 'awaiting_code'
     except Exception as e:
-        await event.reply(f'Error: {e}')
+        await event.reply(f'❌ **Error:** {e}')
         del user_sessions[user_id]
 
-async def handle_code(event):
+async def handle_code_input(event):
+    """Handles the login code submission."""
     user_id = event.sender_id
     code = event.text.strip()
     client = user_sessions[user_id]['client']
     phone = user_sessions[user_id]['phone']
     phone_code_hash = user_sessions[user_id]['phone_code_hash']
-
     try:
-        # Sign in with the code
         await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
-        # If we reach here, login was successful (or a password is required)
-        # Start the group creation process in the background
-        asyncio.create_task(run_group_creation(event, client))
-    except telethon.errors.SessionPasswordNeededError:
-        await event.reply('Your account has Two-Factor Authentication enabled. Please send me your password.')
+        asyncio.create_task(run_group_creation_worker(event, client))
+    except errors.SessionPasswordNeededError:
+        await event.reply('Your account has Two-Factor Authentication enabled. Please send your password.')
         user_sessions[user_id]['state'] = 'awaiting_password'
     except Exception as e:
-        await event.reply(f'Error: {e}')
+        await event.reply(f'❌ **Error:** {e}')
         del user_sessions[user_id]
 
-async def handle_password(event):
+async def handle_password_input(event):
+    """Handles the 2FA password submission."""
     user_id = event.sender_id
     password = event.text.strip()
     client = user_sessions[user_id]['client']
-
     try:
-        # Sign in with the password
         await client.sign_in(password=password)
-        # Start the group creation process in the background
-        asyncio.create_task(run_group_creation(event, client))
+        asyncio.create_task(run_group_creation_worker(event, client))
     except Exception as e:
-        await event.reply(f'Error: {e}')
+        await event.reply(f'❌ **Error:** {e}')
         del user_sessions[user_id]
 
-# --- 2. The Worker Client Logic ---
-def create_new_client(user_id):
+def create_new_user_client():
     """Creates a Telethon client with randomized device info."""
-    # Storing the session in memory. For Render, StringSession is better.
-    # The session string should be stored in a database after login.
     session = StringSession()
-
     device_params = [
-        {'device_model': 'iPhone 14 Pro Max', 'system_version': '16.5.1', 'app_version': '9.6.3'},
-        {'device_model': 'Samsung Galaxy S23 Ultra', 'system_version': 'SDK 33', 'app_version': '9.6.3'},
-        {'device_model': 'Google Pixel 7 Pro', 'system_version': 'SDK 33', 'app_version': '9.6.3'},
-        {'device_model': 'Desktop', 'system_version': 'Windows 11', 'app_version': '4.8.1'},
+        {'device_model': 'iPhone 14 Pro Max', 'system_version': '17.5.1', 'app_version': '10.9.1'},
+        {'device_model': 'Samsung Galaxy S24 Ultra', 'system_version': 'SDK 34', 'app_version': '10.9.1'},
+        {'device_model': 'Desktop', 'system_version': 'Windows 11', 'app_version': '4.16.8'},
+        {'device_model': 'Pixel 8 Pro', 'system_version': 'SDK 34', 'app_version': '10.9.0'}
     ]
     selected_device = random.choice(device_params)
-
     return TelegramClient(session, API_ID, API_HASH, **selected_device)
 
-async def run_group_creation(event, client):
-    """The main background task for creating groups."""
-    await event.reply('Login successful! I will now start creating 50 groups. This will take a long time. You will be notified when it is complete.')
-    del user_sessions[event.sender_id] # Clean up session state
-
+async def run_group_creation_worker(event, client):
+    """The main background task that creates 50 groups for the logged-in user."""
+    await event.reply('✅ **Login successful!**\n\nI will now start creating 50 groups in the background. This will take several hours.')
+    if event.sender_id in user_sessions:
+        del user_sessions[event.sender_id]
     try:
-        # You need at least one other user to create a group.
-        # This could be a public bot username or another user you control.
-        user_to_add = 'username_of_user_to_add'
-
+        user_to_add = '@BotFather'
         for i in range(50):
-            group_title = f"Automated Group {i + 1}"
+            group_title = f"Automated Group #{random.randint(1000, 9999)} - {i + 1}"
             try:
-                await client(telethon.tl.functions.messages.CreateChatRequest(
-                    users=[user_to_add],
-                    title=group_title
-                ))
+                await client(CreateChatRequest(users=[user_to_add], title=group_title))
                 print(f"Successfully created group: {group_title}")
-                # IMPORTANT: Wait a long, random time between creations to avoid bans
-                await asyncio.sleep(random.randint(300, 900)) # 5 to 15 minutes
-            except telethon.errors.FloodWaitError as fwe:
+                sleep_duration = random.randint(400, 1000)
+                print(f"Waiting for {sleep_duration} seconds...")
+                await asyncio.sleep(sleep_duration)
+            except errors.FloodWaitError as fwe:
                 print(f"Flood wait requested. Sleeping for {fwe.seconds} seconds.")
-                await event.sender.send_message(f"Rate limited by Telegram. Pausing for {fwe.seconds / 60:.2f} minutes.")
+                await event.sender.send_message(f"⏳ Paused by Telegram. Resuming in {fwe.seconds / 60:.2f} minutes.")
                 await asyncio.sleep(fwe.seconds)
             except Exception as e:
                 print(f"Could not create group {group_title}. Error: {e}")
-
+                await event.sender.send_message(f"❌ Failed to create a group due to error: {e}")
+                await asyncio.sleep(60)
     finally:
-        await event.sender.send_message('Group creation cycle finished.')
+        await event.sender.send_message('🏁 Group creation cycle finished.')
         await client.disconnect()
 
-# --- 3. Main execution loop ---
 async def main():
-    print("Bot is running...")
+    """Connects the bot and keeps it running."""
+    print("Bot service is starting...")
     await bot.run_until_disconnected()
+    print("Bot service has stopped.")
 
 if __name__ == "__main__":
     asyncio.run(main())
