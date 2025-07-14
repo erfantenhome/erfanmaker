@@ -1,6 +1,3 @@
-# Before running the new code, clear all old sessions
-rm -rf sessions/*
-```python
 import asyncio
 import logging
 import os
